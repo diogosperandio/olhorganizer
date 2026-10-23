@@ -229,7 +229,7 @@ cargo test -p motor
 | Gerar instaladores | `npm run tauri build` |
 | Adicionar um plugin do Tauri | `npm run tauri add <plugin>` |
 
-Os instaladores gerados ficam em `src-tauri/target/release/bundle/`.
+Os instaladores gerados ficam em `target/release/bundle/`.
 
 ---
 

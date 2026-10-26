@@ -22,8 +22,10 @@ Olhorganizer is a desktop app for non-technical users that watches folders and m
 
 - `include_subfolders: false` watches only files directly inside `source_dir`. The destination may be a subfolder of the source, such as `NEWS/{YYYY}/{MM}`, but it cannot equal `source_dir` itself.
 - `include_subfolders: true` watches the complete source tree. The destination must be completely outside `source_dir`.
+- Every destination must be absolute and begin with a fixed base folder before its first marker; the UI supplies that base through `Escolher pasta base`.
 - Recursive scans never follow symbolic links and skip hidden folders, `$RECYCLE.BIN`, and `System Volume Information`.
-- `Config::validate_all()` warns when one enabled rule writes into another enabled rule's watched area because those files may be processed again.
+- `Config::validate_all()` rejects cycles between enabled rules. A one-way chain remains valid but warns when one rule writes into another rule's watched area.
+- As runtime defense, the monitor ignores its own file events for five seconds and pauses a rule that processes the same file identity more than three times in ten minutes. A paused rule requires a user action to resume.
 - Filters always match the file name only, never the full or relative path.
 
 ## Conventions
@@ -32,6 +34,7 @@ Olhorganizer is a desktop app for non-technical users that watches folders and m
 - Libraries use `thiserror`; `anyhow` is allowed only in binaries.
 - Do not use `unwrap()` outside tests.
 - User-facing text is Brazilian Portuguese; code and comments are English.
+- Rust DTOs exposed by Tauri and the hand-written interfaces in `src/lib/types.ts` must remain in sync.
 
 ## Safety
 
@@ -58,7 +61,7 @@ cargo fmt --all
 - [x] Step 3 — Destination planning and file operations
 - [x] Step 4 — Folder monitor and CLI
 - [x] Step 5 — Recursive folder monitoring
-- [ ] Step 6 — Application service integration
+- [x] Step 6 — Application service integration
 - [ ] Step 7 — Rule editor UI
 - [ ] Step 8 — Activity and notifications
 - [ ] Step 9 — Tray and startup integration

@@ -1,10 +1,12 @@
 mod scan;
 mod stable;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::ffi::OsString;
+use std::fs::Metadata;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant, SystemTime};
 
 use motor::{CheckMode, Config, Outcome, Rule, Uuid};
 use notify::event::{ModifyKind, RenameMode};
@@ -44,6 +46,9 @@ pub struct MonitorOptions {
     pub instant_rescan_interval: Duration,
     pub unavailable_retry: Duration,
     pub interval_minute: Duration,
+    pub own_event_ignore: Duration,
+    pub circuit_window: Duration,
+    pub circuit_max_processes: usize,
 }
 
 impl Default for MonitorOptions {
@@ -56,6 +61,9 @@ impl Default for MonitorOptions {
             instant_rescan_interval: Duration::from_secs(10 * 60),
             unavailable_retry: Duration::from_secs(60),
             interval_minute: Duration::from_secs(60),
+            own_event_ignore: Duration::from_secs(5),
+            circuit_window: Duration::from_secs(10 * 60),
+            circuit_max_processes: 3,
         }
     }
 }
@@ -64,9 +72,15 @@ pub struct Monitor {
     event_tx: mpsc::UnboundedSender<MonitorEvent>,
     options: MonitorOptions,
     tasks: HashMap<Uuid, RuleHandle>,
+    shared: SharedState,
+}
+
+#[derive(Clone)]
+struct SharedState {
     active_rules: Arc<RwLock<Vec<Rule>>>,
     in_flight: Arc<Mutex<HashSet<PathBuf>>>,
     network_hints: Arc<Mutex<HashSet<Uuid>>>,
+    circuit: Arc<Mutex<CircuitState>>,
 }
 
 impl Monitor {
@@ -88,9 +102,12 @@ impl Monitor {
             event_tx,
             options,
             tasks: HashMap::new(),
-            active_rules: Arc::new(RwLock::new(rules.clone())),
-            in_flight: Arc::new(Mutex::new(HashSet::new())),
-            network_hints: Arc::new(Mutex::new(HashSet::new())),
+            shared: SharedState {
+                active_rules: Arc::new(RwLock::new(rules.clone())),
+                in_flight: Arc::new(Mutex::new(HashSet::new())),
+                network_hints: Arc::new(Mutex::new(HashSet::new())),
+                circuit: Arc::new(Mutex::new(CircuitState::default())),
+            },
         };
         for rule in rules {
             monitor.spawn_rule(rule);
@@ -123,10 +140,11 @@ impl Monitor {
             }
             if let Some(handle) = self.tasks.remove(&rule_id) {
                 handle.stop().await;
+                self.shared.circuit.lock().await.clear_rule(rule_id);
             }
         }
 
-        *self.active_rules.write().await = enabled_rules;
+        *self.shared.active_rules.write().await = enabled_rules;
         for rule in incoming.into_values() {
             self.spawn_rule(rule);
         }
@@ -144,20 +162,9 @@ impl Monitor {
         let task_rule = rule.clone();
         let event_tx = self.event_tx.clone();
         let options = self.options;
-        let active_rules = Arc::clone(&self.active_rules);
-        let in_flight = Arc::clone(&self.in_flight);
-        let network_hints = Arc::clone(&self.network_hints);
+        let shared = self.shared.clone();
         let join = tokio::spawn(async move {
-            run_rule(
-                task_rule,
-                event_tx,
-                options,
-                active_rules,
-                in_flight,
-                network_hints,
-                stop_rx,
-            )
-            .await;
+            run_rule(task_rule, event_tx, options, shared, stop_rx).await;
         });
         self.tasks.insert(
             rule.id,
@@ -167,6 +174,100 @@ impl Monitor {
                 join,
             },
         );
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct FileIdentity {
+    name: OsString,
+    size: u64,
+    modified: Option<SystemTime>,
+}
+
+impl FileIdentity {
+    fn from_path(path: &std::path::Path, metadata: &Metadata) -> Option<Self> {
+        Some(Self {
+            name: path.file_name()?.to_owned(),
+            size: metadata.len(),
+            modified: metadata.modified().ok(),
+        })
+    }
+}
+
+#[derive(Debug)]
+struct RecentWrite {
+    path: PathBuf,
+    size: u64,
+    modified: Option<SystemTime>,
+    written_at: Instant,
+}
+
+#[derive(Debug, Default)]
+struct CircuitState {
+    recent_writes: VecDeque<RecentWrite>,
+    processed: HashMap<Uuid, VecDeque<(FileIdentity, Instant)>>,
+}
+
+impl CircuitState {
+    fn clear_rule(&mut self, rule_id: Uuid) {
+        self.processed.remove(&rule_id);
+    }
+
+    fn is_own_recent_event(
+        &mut self,
+        path: &std::path::Path,
+        metadata: &Metadata,
+        now: Instant,
+        ignore_for: Duration,
+        remember_for: Duration,
+    ) -> bool {
+        self.recent_writes
+            .retain(|write| now.duration_since(write.written_at) <= remember_for);
+        let path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+        let modified = metadata.modified().ok();
+        self.recent_writes.iter().any(|write| {
+            now.duration_since(write.written_at) <= ignore_for
+                && write.path == path
+                && write.size == metadata.len()
+                && write.modified == modified
+        })
+    }
+
+    fn would_trip(
+        &mut self,
+        rule_id: Uuid,
+        identity: &FileIdentity,
+        now: Instant,
+        window: Duration,
+        maximum: usize,
+    ) -> bool {
+        let history = self.processed.entry(rule_id).or_default();
+        history.retain(|(_, processed_at)| now.duration_since(*processed_at) <= window);
+        history
+            .iter()
+            .filter(|(previous, _)| previous == identity)
+            .count()
+            >= maximum
+    }
+
+    fn record_processed(&mut self, rule_id: Uuid, identity: FileIdentity, now: Instant) {
+        self.processed
+            .entry(rule_id)
+            .or_default()
+            .push_back((identity, now));
+    }
+
+    fn record_write(&mut self, path: &std::path::Path, now: Instant) {
+        let Ok(metadata) = std::fs::metadata(path) else {
+            return;
+        };
+        let path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+        self.recent_writes.push_back(RecentWrite {
+            path,
+            size: metadata.len(),
+            modified: metadata.modified().ok(),
+            written_at: now,
+        });
     }
 }
 
@@ -197,12 +298,10 @@ async fn run_rule(
     rule: Rule,
     event_tx: mpsc::UnboundedSender<MonitorEvent>,
     options: MonitorOptions,
-    active_rules: Arc<RwLock<Vec<Rule>>>,
-    in_flight: Arc<Mutex<HashSet<PathBuf>>>,
-    network_hints: Arc<Mutex<HashSet<Uuid>>>,
+    shared: SharedState,
     mut stop_rx: watch::Receiver<bool>,
 ) {
-    emit_network_hint_once(&rule, &event_tx, &network_hints).await;
+    emit_network_hint_once(&rule, &event_tx, &shared.network_hints).await;
     let mut pause_announced = false;
 
     loop {
@@ -229,27 +328,10 @@ async fn run_rule(
 
         let result = match rule.check_mode {
             CheckMode::Instant => {
-                run_instant(
-                    &rule,
-                    &event_tx,
-                    options,
-                    &active_rules,
-                    &in_flight,
-                    &mut stop_rx,
-                )
-                .await
+                run_instant(&rule, &event_tx, options, &shared, &mut stop_rx).await
             }
             CheckMode::Interval { minutes } => {
-                run_interval(
-                    &rule,
-                    &event_tx,
-                    options,
-                    minutes,
-                    &active_rules,
-                    &in_flight,
-                    &mut stop_rx,
-                )
-                .await
+                run_interval(&rule, &event_tx, options, minutes, &shared, &mut stop_rx).await
             }
         };
 
@@ -274,6 +356,21 @@ async fn run_rule(
                     },
                 );
             }
+            SessionEnd::CircuitPaused(reason) => {
+                send_event(
+                    &event_tx,
+                    MonitorEvent::RulePaused {
+                        rule_id: rule.id,
+                        reason_pt: reason,
+                    },
+                );
+                while !*stop_rx.borrow() {
+                    if stop_rx.changed().await.is_err() {
+                        break;
+                    }
+                }
+                return;
+            }
         }
 
         if wait_or_stop(options.unavailable_retry, &mut stop_rx).await {
@@ -286,14 +383,20 @@ enum SessionEnd {
     Stopped,
     Unavailable(String),
     Error(String),
+    CircuitPaused(String),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CandidateOrigin {
+    Watcher,
+    Scan,
 }
 
 async fn run_instant(
     rule: &Rule,
     event_tx: &mpsc::UnboundedSender<MonitorEvent>,
     options: MonitorOptions,
-    active_rules: &Arc<RwLock<Vec<Rule>>>,
-    in_flight: &Arc<Mutex<HashSet<PathBuf>>>,
+    shared: &SharedState,
     stop_rx: &mut watch::Receiver<bool>,
 ) -> SessionEnd {
     let (notify_tx, mut notify_rx) = mpsc::unbounded_channel::<DebounceEventResult>();
@@ -326,7 +429,7 @@ async fn run_instant(
         ));
     }
 
-    if let Some(end) = scan_and_process(rule, event_tx, options, active_rules, in_flight).await {
+    if let Some(end) = scan_and_process(rule, event_tx, options, shared).await {
         return end;
     }
 
@@ -362,8 +465,8 @@ async fn run_instant(
                             if let Err(reason) = check_rule_paths(rule) {
                                 return SessionEnd::Unavailable(reason);
                             }
-                            if let Some(reason) = process_candidate(rule, path, event_tx, options, active_rules, in_flight).await {
-                                return SessionEnd::Unavailable(reason);
+                            if let Some(end) = process_candidate(rule, path, CandidateOrigin::Watcher, event_tx, options, shared).await {
+                                return end;
                             }
                         }
                     }
@@ -377,7 +480,7 @@ async fn run_instant(
                 }
             }
             _ = rescan.tick() => {
-                if let Some(end) = scan_and_process(rule, event_tx, options, active_rules, in_flight).await {
+                if let Some(end) = scan_and_process(rule, event_tx, options, shared).await {
                     return end;
                 }
             }
@@ -395,11 +498,10 @@ async fn run_interval(
     event_tx: &mpsc::UnboundedSender<MonitorEvent>,
     options: MonitorOptions,
     minutes: u32,
-    active_rules: &Arc<RwLock<Vec<Rule>>>,
-    in_flight: &Arc<Mutex<HashSet<PathBuf>>>,
+    shared: &SharedState,
     stop_rx: &mut watch::Receiver<bool>,
 ) -> SessionEnd {
-    if let Some(end) = scan_and_process(rule, event_tx, options, active_rules, in_flight).await {
+    if let Some(end) = scan_and_process(rule, event_tx, options, shared).await {
         return end;
     }
 
@@ -420,7 +522,7 @@ async fn run_interval(
                 }
             }
             _ = scans.tick() => {
-                if let Some(end) = scan_and_process(rule, event_tx, options, active_rules, in_flight).await {
+                if let Some(end) = scan_and_process(rule, event_tx, options, shared).await {
                     return end;
                 }
             }
@@ -437,8 +539,7 @@ async fn scan_and_process(
     rule: &Rule,
     event_tx: &mpsc::UnboundedSender<MonitorEvent>,
     options: MonitorOptions,
-    active_rules: &Arc<RwLock<Vec<Rule>>>,
-    in_flight: &Arc<Mutex<HashSet<PathBuf>>>,
+    shared: &SharedState,
 ) -> Option<SessionEnd> {
     if let Err(reason) = check_rule_paths(rule) {
         return Some(SessionEnd::Unavailable(reason));
@@ -455,9 +556,9 @@ async fn scan_and_process(
 
     for path in files {
         if let Some(reason) =
-            process_candidate(rule, path, event_tx, options, active_rules, in_flight).await
+            process_candidate(rule, path, CandidateOrigin::Scan, event_tx, options, shared).await
         {
-            return Some(SessionEnd::Unavailable(reason));
+            return Some(reason);
         }
     }
     None
@@ -491,28 +592,39 @@ fn expand_event_paths(rule: &Rule, paths: Vec<PathBuf>) -> std::io::Result<Vec<P
 async fn process_candidate(
     rule: &Rule,
     path: PathBuf,
+    origin: CandidateOrigin,
     event_tx: &mpsc::UnboundedSender<MonitorEvent>,
     options: MonitorOptions,
-    active_rules: &Arc<RwLock<Vec<Rule>>>,
-    in_flight: &Arc<Mutex<HashSet<PathBuf>>>,
-) -> Option<String> {
+    shared: &SharedState,
+) -> Option<SessionEnd> {
     let selected_rule_id = {
-        let rules = active_rules.read().await;
+        let rules = shared.active_rules.read().await;
         motor::pick_rule(&rules, &path).map(|selected| selected.id)
     };
     if selected_rule_id != Some(rule.id) {
         return None;
     }
-    match std::fs::symlink_metadata(&path) {
-        Ok(metadata) if metadata.is_file() => {}
+    let metadata = match std::fs::symlink_metadata(&path) {
+        Ok(metadata) if metadata.is_file() => metadata,
         Ok(_) => return None,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return None,
-        Err(_) => {}
+        Err(_) => return None,
+    };
+    if origin == CandidateOrigin::Watcher
+        && shared.circuit.lock().await.is_own_recent_event(
+            &path,
+            &metadata,
+            Instant::now(),
+            options.own_event_ignore,
+            options.circuit_window,
+        )
+    {
+        return None;
     }
 
     let key = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
     {
-        let mut paths = in_flight.lock().await;
+        let mut paths = shared.in_flight.lock().await;
         if !paths.insert(key.clone()) {
             return None;
         }
@@ -527,9 +639,9 @@ async fn process_candidate(
     )
     .await;
     if let Err(error) = stable_result {
-        in_flight.lock().await.remove(&key);
+        shared.in_flight.lock().await.remove(&key);
         if let Err(reason) = check_rule_paths(rule) {
-            return Some(reason);
+            return Some(SessionEnd::Unavailable(reason));
         }
         send_event(
             event_tx,
@@ -542,8 +654,28 @@ async fn process_candidate(
     }
 
     if let Err(reason) = check_rule_paths(rule) {
-        in_flight.lock().await.remove(&key);
-        return Some(reason);
+        shared.in_flight.lock().await.remove(&key);
+        return Some(SessionEnd::Unavailable(reason));
+    }
+
+    let identity = std::fs::metadata(&path)
+        .ok()
+        .and_then(|metadata| FileIdentity::from_path(&path, &metadata));
+    if let Some(identity) = &identity {
+        let should_pause = shared.circuit.lock().await.would_trip(
+            rule.id,
+            identity,
+            Instant::now(),
+            options.circuit_window,
+            options.circuit_max_processes,
+        );
+        if should_pause {
+            shared.in_flight.lock().await.remove(&key);
+            return Some(SessionEnd::CircuitPaused(
+                "Regra pausada: o mesmo arquivo foi processado várias vezes seguidas. Verifique se outra regra está devolvendo os arquivos para esta pasta."
+                    .to_owned(),
+            ));
+        }
     }
 
     let task_rule = rule.clone();
@@ -560,7 +692,18 @@ async fn process_candidate(
         },
     };
 
-    in_flight.lock().await.remove(&key);
+    shared.in_flight.lock().await.remove(&key);
+    if let Some(destination) = match &outcome {
+        Outcome::Moved { to } | Outcome::Copied { to } => Some(to),
+        _ => None,
+    } {
+        let now = Instant::now();
+        let mut state = shared.circuit.lock().await;
+        if let Some(identity) = identity {
+            state.record_processed(rule.id, identity, now);
+        }
+        state.record_write(destination, now);
+    }
     send_event(
         event_tx,
         MonitorEvent::FileProcessed {

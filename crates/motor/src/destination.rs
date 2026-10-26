@@ -3,7 +3,7 @@ use std::path::{Component, PathBuf};
 
 use chrono::{DateTime, Datelike, Local, NaiveDate};
 
-use crate::{Captures, DateSource, MotorError, Rule};
+use crate::{compile, Captures, DateSource, MotorError, Rule};
 
 const MONTH_NAMES_PT: [&str; 12] = [
     "Janeiro",
@@ -26,6 +26,28 @@ pub fn build_destination(
     file_meta: &Metadata,
 ) -> Result<PathBuf, MotorError> {
     let date = date_for_rule(rule, captures, file_meta)?;
+    render_destination(rule, captures, date)
+}
+
+pub fn preview_destination(rule: &Rule, file_name: &str) -> Result<PathBuf, MotorError> {
+    let filter = compile(&rule.filter)?;
+    let captures = filter
+        .matches(file_name)
+        .ok_or_else(|| MotorError::SampleNotMatched {
+            file_name: file_name.to_owned(),
+        })?;
+    let date = match rule.date_source {
+        DateSource::FileName => date_from_captures(&captures)?,
+        DateSource::Modified | DateSource::Detected => Local::now().date_naive(),
+    };
+    render_destination(rule, &captures, date)
+}
+
+fn render_destination(
+    rule: &Rule,
+    captures: &Captures,
+    date: NaiveDate,
+) -> Result<PathBuf, MotorError> {
     let mut rendered = String::new();
     let mut position = 0;
 
@@ -229,6 +251,16 @@ mod tests {
             destination,
             PathBuf::from("/arquivo/2026/26/10/22/Outubro/20261022.pdf/20261022.pdf")
         );
+    }
+
+    #[test]
+    fn previews_destination_without_touching_the_file_system() {
+        let mut rule = rule("/arquivo/{YYYY}/{MM}".to_owned());
+        rule.filter = "{YYYY}{MM}{DD}.pdf".to_owned();
+
+        let destination = preview_destination(&rule, "20261022.pdf").expect("preview should build");
+
+        assert_eq!(destination, PathBuf::from("/arquivo/2026/10/20261022.pdf"));
     }
 
     #[test]

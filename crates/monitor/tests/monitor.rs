@@ -383,3 +383,121 @@ async fn recursive_rule_scans_a_folder_moved_into_the_source() {
     );
     monitor.stop().await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn circuit_breaker_pauses_a_manually_configured_rule_cycle() {
+    let directory = tempdir().expect("temp directory should be created");
+    let source_a = directory.path().join("a");
+    let source_b = directory.path().join("b");
+    fs::create_dir(&source_a).expect("source A should be created");
+    fs::create_dir(&source_b).expect("source B should be created");
+    fs::write(source_a.join("20261022.pdf"), b"ciclo").expect("fixture should be written");
+    let mut rule_a = rule(&source_a, &source_b, CheckMode::Interval { minutes: 1 });
+    rule_a.name = "A".to_owned();
+    rule_a.destination = source_b.to_string_lossy().into_owned();
+    let rule_a_id = rule_a.id;
+    let mut rule_b = rule(&source_b, &source_a, CheckMode::Interval { minutes: 1 });
+    rule_b.name = "B".to_owned();
+    rule_b.destination = source_a.to_string_lossy().into_owned();
+    rule_b.priority = 1;
+    let configuration = Config {
+        rules: vec![rule_a, rule_b],
+        ..Config::default()
+    };
+    let (event_tx, mut event_rx) = mpsc::unbounded_channel();
+    let mut options = test_options();
+    options.stable_for = Duration::from_millis(10);
+    options.interval_minute = Duration::from_millis(20);
+    let mut monitor = Monitor::start_with_options(configuration, event_tx, options);
+    let mut processed_by_a = 0;
+
+    let paused = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            match event_rx.recv().await {
+                Some(MonitorEvent::FileProcessed {
+                    rule_id, outcome, ..
+                }) => {
+                    assert!(matches!(outcome, Outcome::Moved { .. }));
+                    if rule_id == rule_a_id {
+                        processed_by_a += 1;
+                    }
+                }
+                Some(MonitorEvent::RulePaused { rule_id, reason_pt }) => {
+                    break (rule_id, reason_pt)
+                }
+                Some(MonitorEvent::RuleError { message_pt, .. }) => {
+                    panic!("unexpected rule error: {message_pt}");
+                }
+                None => panic!("event channel closed"),
+            }
+        }
+    })
+    .await
+    .expect("circuit breaker should pause the cycle");
+
+    assert_eq!(
+        paused.1,
+        "Regra pausada: o mesmo arquivo foi processado várias vezes seguidas. Verifique se outra regra está devolvendo os arquivos para esta pasta."
+    );
+    if paused.0 == rule_a_id {
+        assert_eq!(processed_by_a, 3);
+    } else {
+        assert!(processed_by_a <= 3);
+    }
+    let names: Vec<_> = fs::read_dir(&source_a)
+        .expect("source A should be readable")
+        .chain(fs::read_dir(&source_b).expect("source B should be readable"))
+        .map(|entry| {
+            entry
+                .expect("entry should be readable")
+                .file_name()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect();
+    assert!(names.iter().all(|name| !name.contains(" (")));
+    monitor.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn watcher_ignores_events_created_by_the_app_for_five_seconds() {
+    let directory = tempdir().expect("temp directory should be created");
+    let source_a = directory.path().join("a");
+    let source_b = directory.path().join("b");
+    fs::create_dir(&source_a).expect("source A should be created");
+    fs::create_dir(&source_b).expect("source B should be created");
+    let mut rule_a = rule(&source_a, &source_b, CheckMode::Instant);
+    rule_a.destination = source_b.to_string_lossy().into_owned();
+    let rule_a_id = rule_a.id;
+    let mut rule_b = rule(&source_b, &source_a, CheckMode::Instant);
+    rule_b.destination = source_a.to_string_lossy().into_owned();
+    rule_b.priority = 1;
+    let configuration = Config {
+        rules: vec![rule_a, rule_b],
+        ..Config::default()
+    };
+    let (event_tx, mut event_rx) = mpsc::unbounded_channel();
+    let mut monitor = Monitor::start_with_options(configuration, event_tx, test_options());
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    fs::write(source_a.join("20261022.pdf"), "evento próprio".as_bytes())
+        .expect("fixture should be written");
+    let event = tokio::time::timeout(Duration::from_secs(3), event_rx.recv())
+        .await
+        .expect("first processing event should arrive")
+        .expect("event channel should stay open");
+    assert!(matches!(
+        event,
+        MonitorEvent::FileProcessed {
+            rule_id,
+            outcome: Outcome::Moved { .. },
+            ..
+        } if rule_id == rule_a_id
+    ));
+    let repeated = tokio::time::timeout(Duration::from_millis(300), event_rx.recv()).await;
+
+    assert!(repeated.is_err(), "app-generated event was processed again");
+    assert!(source_b.join("20261022.pdf").exists());
+    assert!(!source_a.join("20261022.pdf").exists());
+    monitor.stop().await;
+}

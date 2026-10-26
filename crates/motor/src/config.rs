@@ -18,6 +18,18 @@ pub struct Config {
     pub settings: Settings,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ConfigValidation {
+    pub errors: Vec<String>,
+    pub warnings: Vec<String>,
+}
+
+impl ConfigValidation {
+    pub fn is_valid(&self) -> bool {
+        self.errors.is_empty()
+    }
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -59,6 +71,7 @@ impl Config {
     }
 
     pub fn save(&self, path: impl AsRef<Path>) -> Result<(), MotorError> {
+        self.ensure_valid_for_persistence()?;
         let path = path.as_ref();
         let mut serialized = serde_json::to_vec_pretty(self).map_err(MotorError::Serialize)?;
         serialized.push(b'\n');
@@ -109,24 +122,75 @@ impl Config {
         rules
     }
 
-    pub fn validate_all(&self) -> Vec<String> {
-        let enabled: Vec<_> = self.rules.iter().filter(|rule| rule.enabled).collect();
-        let mut warnings = Vec::new();
+    pub fn import(path: impl AsRef<Path>) -> Result<Self, MotorError> {
+        let config = Self::load(path)?;
+        config.ensure_valid_for_persistence()?;
+        Ok(config)
+    }
 
-        for producing_rule in &enabled {
+    pub fn validate_all(&self) -> ConfigValidation {
+        let enabled: Vec<_> = self.rules.iter().filter(|rule| rule.enabled).collect();
+        let mut edges = vec![vec![false; enabled.len()]; enabled.len()];
+
+        for (producer_index, producing_rule) in enabled.iter().enumerate() {
             let destination = destination_fixed_prefix(&producing_rule.destination);
-            for watching_rule in &enabled {
-                if producing_rule.id == watching_rule.id {
+            for (watcher_index, watching_rule) in enabled.iter().enumerate() {
+                if producer_index == watcher_index {
                     continue;
                 }
                 let watched = if watching_rule.include_subfolders {
                     path_is_same_or_inside(&destination, &watching_rule.source_dir)
                 } else {
-                    !producing_rule.destination.contains('{')
-                        && paths_equal(&destination, &watching_rule.source_dir)
+                    paths_equal(&destination, &watching_rule.source_dir)
                 };
                 if watched {
-                    warnings.push(format!(
+                    edges[producer_index][watcher_index] = true;
+                }
+            }
+        }
+
+        let reachability = transitive_closure(&edges);
+        let mut validation = ConfigValidation::default();
+        let mut included_in_cycle = vec![false; enabled.len()];
+        for first in 0..enabled.len() {
+            if included_in_cycle[first] {
+                continue;
+            }
+            let cycle: Vec<_> = (0..enabled.len())
+                .filter(|&candidate| {
+                    candidate == first
+                        || (reachability[first][candidate] && reachability[candidate][first])
+                })
+                .filter(|&candidate| {
+                    candidate != first
+                        || (0..enabled.len()).any(|other| {
+                            other != first
+                                && reachability[first][other]
+                                && reachability[other][first]
+                        })
+                })
+                .collect();
+            if cycle.len() > 1 {
+                for &index in &cycle {
+                    included_in_cycle[index] = true;
+                }
+                let names: Vec<_> = cycle
+                    .iter()
+                    .map(|&index| enabled[index].name.as_str())
+                    .collect();
+                validation.errors.push(format!(
+                    "As regras {} moveriam os arquivos de uma para a outra sem parar.",
+                    format_rule_names(&names)
+                ));
+            }
+        }
+
+        for (producer_index, producing_rule) in enabled.iter().enumerate() {
+            for (watcher_index, watching_rule) in enabled.iter().enumerate() {
+                if edges[producer_index][watcher_index]
+                    && !(reachability[watcher_index][producer_index])
+                {
+                    validation.warnings.push(format!(
                         "Os arquivos movidos pela regra '{}' serão processados de novo pela regra '{}'.",
                         producing_rule.name, watching_rule.name
                     ));
@@ -134,7 +198,50 @@ impl Config {
             }
         }
 
-        warnings
+        validation
+    }
+
+    fn ensure_valid_for_persistence(&self) -> Result<(), MotorError> {
+        for rule in &self.rules {
+            if let Some(problem) = rule.validate().into_iter().next() {
+                return Err(MotorError::InvalidConfiguration {
+                    message: format!("A regra '{}' não é válida: {problem}", rule.name),
+                });
+            }
+        }
+        if let Some(message) = self.validate_all().errors.into_iter().next() {
+            return Err(MotorError::InvalidConfiguration { message });
+        }
+        Ok(())
+    }
+}
+
+fn transitive_closure(edges: &[Vec<bool>]) -> Vec<Vec<bool>> {
+    let mut reachable = edges.to_vec();
+    for middle in 0..reachable.len() {
+        for source in 0..reachable.len() {
+            for destination in 0..reachable.len() {
+                reachable[source][destination] |=
+                    reachable[source][middle] && reachable[middle][destination];
+            }
+        }
+    }
+    reachable
+}
+
+fn format_rule_names(names: &[&str]) -> String {
+    match names {
+        [] => String::new(),
+        [name] => format!("'{name}'"),
+        [first, second] => format!("'{first}' e '{second}'"),
+        _ => {
+            let quoted: Vec<_> = names.iter().map(|name| format!("'{name}'")).collect();
+            if let Some((last, first)) = quoted.split_last() {
+                format!("{} e {last}", first.join(", "))
+            } else {
+                String::new()
+            }
+        }
     }
 }
 
@@ -188,6 +295,8 @@ pub enum MotorError {
     Serialize(#[source] serde_json::Error),
     #[error("O caminho de configuração '{path}' não aponta para um arquivo.")]
     InvalidPath { path: PathBuf },
+    #[error("Configuração inválida: {message}")]
+    InvalidConfiguration { message: String },
     #[error("O marcador '{marker}' não é conhecido.")]
     UnknownMarker { marker: String },
     #[error("Há uma chave aberta sem fechamento na posição {position} do filtro.")]
@@ -208,6 +317,8 @@ pub enum MotorError {
     MissingFileNameDate,
     #[error("A data capturada no nome do arquivo é inválida.")]
     InvalidCapturedDate,
+    #[error("O arquivo de exemplo '{file_name}' não corresponde ao filtro da regra.")]
+    SampleNotMatched { file_name: String },
     #[error("Não foi possível ler a data de modificação do arquivo: {0}")]
     ModifiedTime(#[source] std::io::Error),
     #[error("Há uma chave aberta sem fechamento no destino na posição {position}.")]
@@ -388,8 +499,102 @@ mod tests {
         };
 
         assert_eq!(
-            config.validate_all(),
+            config.validate_all().warnings,
             ["Os arquivos movidos pela regra 'A' serão processados de novo pela regra 'B'."]
         );
+    }
+
+    fn routed_rule(name: &str, source: &str, destination: &str) -> Rule {
+        let mut configured_rule = rule(name, 1, true);
+        configured_rule.source_dir = PathBuf::from(source);
+        configured_rule.destination = destination.to_owned();
+        configured_rule
+    }
+
+    #[test]
+    fn rejects_a_two_rule_cycle() {
+        let config = Config {
+            rules: vec![routed_rule("A", "/a", "/b"), routed_rule("B", "/b", "/a")],
+            ..Config::default()
+        };
+
+        assert_eq!(
+            config.validate_all().errors,
+            ["As regras 'A' e 'B' moveriam os arquivos de uma para a outra sem parar."]
+        );
+    }
+
+    #[test]
+    fn rejects_a_three_rule_cycle() {
+        let config = Config {
+            rules: vec![
+                routed_rule("A", "/a", "/b"),
+                routed_rule("B", "/b", "/c"),
+                routed_rule("C", "/c", "/a"),
+            ],
+            ..Config::default()
+        };
+
+        assert_eq!(
+            config.validate_all().errors,
+            ["As regras 'A', 'B' e 'C' moveriam os arquivos de uma para a outra sem parar."]
+        );
+    }
+
+    #[test]
+    fn accepts_a_chain_with_a_warning() {
+        let config = Config {
+            rules: vec![
+                routed_rule("A", "/a", "/b"),
+                routed_rule("B", "/b", "/c"),
+                routed_rule("C", "/c", "/fora"),
+            ],
+            ..Config::default()
+        };
+        let validation = config.validate_all();
+
+        assert!(validation.errors.is_empty());
+        assert_eq!(validation.warnings.len(), 2);
+    }
+
+    #[test]
+    fn import_rejects_a_rule_cycle_but_load_allows_manual_recovery() {
+        let directory = tempdir().expect("temp directory should be created");
+        let path = directory.path().join("config.json");
+        let config = Config {
+            rules: vec![routed_rule("A", "/a", "/b"), routed_rule("B", "/b", "/a")],
+            ..Config::default()
+        };
+        fs::write(
+            &path,
+            serde_json::to_vec(&config).expect("config should serialize"),
+        )
+        .expect("fixture should be written");
+
+        assert!(matches!(
+            Config::import(&path),
+            Err(MotorError::InvalidConfiguration { .. })
+        ));
+        assert_eq!(
+            Config::load(&path)
+                .expect("manually edited config should still load")
+                .rules
+                .len(),
+            2
+        );
+    }
+
+    #[test]
+    fn save_rejects_a_rule_cycle() {
+        let directory = tempdir().expect("temp directory should be created");
+        let config = Config {
+            rules: vec![routed_rule("A", "/a", "/b"), routed_rule("B", "/b", "/a")],
+            ..Config::default()
+        };
+
+        assert!(matches!(
+            config.save(directory.path().join("config.json")),
+            Err(MotorError::InvalidConfiguration { .. })
+        ));
     }
 }

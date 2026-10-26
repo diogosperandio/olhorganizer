@@ -1,156 +1,128 @@
 <script lang="ts">
-  import { invoke } from "@tauri-apps/api/core";
+  import { onMount } from "svelte";
 
-  let name = $state("");
-  let greetMsg = $state("");
+  import {
+    listRules,
+    onFileProcessed,
+    onRuleError,
+    onRulePaused,
+    testRule,
+  } from "$lib/api";
+  import type { Rule } from "$lib/types";
 
-  async function greet(event: Event) {
-    event.preventDefault();
-    // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-    greetMsg = await invoke("greet", { name });
+  let rules = $state<Rule[]>([]);
+  let output = $state("Clique em “Listar regras” para testar a ponte com o backend.");
+  let busy = $state(false);
+
+  async function run(label: string, operation: () => Promise<unknown>) {
+    busy = true;
+    try {
+      output = JSON.stringify(await operation(), null, 2);
+    } catch (error) {
+      output = `${label}: ${String(error)}`;
+    } finally {
+      busy = false;
+    }
   }
+
+  async function loadRules() {
+    await run("Falha ao listar regras", async () => {
+      rules = await listRules();
+      return rules;
+    });
+  }
+
+  async function testFirstRule() {
+    const first = rules[0];
+    if (!first) {
+      output = "Não há regras para testar.";
+      return;
+    }
+    await run("Falha ao testar a regra", () => testRule(first));
+  }
+
+  onMount(() => {
+    const subscriptions = [
+      onFileProcessed((payload) => {
+        output = JSON.stringify({ event: "file-processed", payload }, null, 2);
+      }),
+      onRuleError((payload) => {
+        output = JSON.stringify({ event: "rule-error", payload }, null, 2);
+      }),
+      onRulePaused((payload) => {
+        output = JSON.stringify({ event: "rule-paused", payload }, null, 2);
+      }),
+    ];
+    void loadRules();
+
+    return () => {
+      for (const subscription of subscriptions) {
+        void subscription.then((unlisten) => unlisten());
+      }
+    };
+  });
 </script>
 
-<main class="container">
-  <h1>Welcome to Tauri + Svelte</h1>
+<svelte:head>
+  <title>Olhorganizer — diagnóstico</title>
+</svelte:head>
 
-  <div class="row">
-    <a href="https://vite.dev" target="_blank">
-      <img src="/vite.svg" class="logo vite" alt="Vite Logo" />
-    </a>
-    <a href="https://tauri.app" target="_blank">
-      <img src="/tauri.svg" class="logo tauri" alt="Tauri Logo" />
-    </a>
-    <a href="https://svelte.dev" target="_blank">
-      <img src="/svelte.svg" class="logo svelte-kit" alt="SvelteKit Logo" />
-    </a>
+<main>
+  <h1>Olhorganizer</h1>
+  <p>Página temporária para validar comandos e eventos do Tauri.</p>
+
+  <div class="actions">
+    <button onclick={loadRules} disabled={busy}>Listar regras</button>
+    <button onclick={testFirstRule} disabled={busy || rules.length === 0}>Testar primeira regra</button>
   </div>
-  <p>Click on the Tauri, Vite, and SvelteKit logos to learn more.</p>
 
-  <form class="row" onsubmit={greet}>
-    <input id="greet-input" placeholder="Enter a name..." bind:value={name} />
-    <button type="submit">Greet</button>
-  </form>
-  <p>{greetMsg}</p>
+  <p>{rules.length} regra(s) carregada(s).</p>
+  <pre>{output}</pre>
 </main>
 
 <style>
-.logo.vite:hover {
-  filter: drop-shadow(0 0 2em #747bff);
-}
-
-.logo.svelte-kit:hover {
-  filter: drop-shadow(0 0 2em #ff3e00);
-}
-
-:root {
-  font-family: Inter, Avenir, Helvetica, Arial, sans-serif;
-  font-size: 16px;
-  line-height: 24px;
-  font-weight: 400;
-
-  color: #0f0f0f;
-  background-color: #f6f6f6;
-
-  font-synthesis: none;
-  text-rendering: optimizeLegibility;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-  -webkit-text-size-adjust: 100%;
-}
-
-.container {
-  margin: 0;
-  padding-top: 10vh;
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  text-align: center;
-}
-
-.logo {
-  height: 6em;
-  padding: 1.5em;
-  will-change: filter;
-  transition: 0.75s;
-}
-
-.logo.tauri:hover {
-  filter: drop-shadow(0 0 2em #24c8db);
-}
-
-.row {
-  display: flex;
-  justify-content: center;
-}
-
-a {
-  font-weight: 500;
-  color: #646cff;
-  text-decoration: inherit;
-}
-
-a:hover {
-  color: #535bf2;
-}
-
-h1 {
-  text-align: center;
-}
-
-input,
-button {
-  border-radius: 8px;
-  border: 1px solid transparent;
-  padding: 0.6em 1.2em;
-  font-size: 1em;
-  font-weight: 500;
-  font-family: inherit;
-  color: #0f0f0f;
-  background-color: #ffffff;
-  transition: border-color 0.25s;
-  box-shadow: 0 2px 2px rgba(0, 0, 0, 0.2);
-}
-
-button {
-  cursor: pointer;
-}
-
-button:hover {
-  border-color: #396cd8;
-}
-button:active {
-  border-color: #396cd8;
-  background-color: #e8e8e8;
-}
-
-input,
-button {
-  outline: none;
-}
-
-#greet-input {
-  margin-right: 5px;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    color: #f6f6f6;
-    background-color: #2f2f2f;
+  :global(body) {
+    margin: 0;
+    color: #17202a;
+    background: #f4f6f7;
+    font-family: system-ui, sans-serif;
   }
 
-  a:hover {
-    color: #24c8db;
+  main {
+    box-sizing: border-box;
+    width: min(960px, 100%);
+    margin: 0 auto;
+    padding: 2rem;
   }
 
-  input,
+  .actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.75rem;
+    margin: 1.5rem 0;
+  }
+
   button {
-    color: #ffffff;
-    background-color: #0f0f0f98;
+    padding: 0.7rem 1rem;
+    border: 0;
+    border-radius: 0.5rem;
+    color: white;
+    background: #21618c;
+    cursor: pointer;
   }
-  button:active {
-    background-color: #0f0f0f69;
-  }
-}
 
+  button:disabled {
+    cursor: not-allowed;
+    opacity: 0.55;
+  }
+
+  pre {
+    min-height: 18rem;
+    overflow: auto;
+    padding: 1rem;
+    border-radius: 0.5rem;
+    color: #eaf2f8;
+    background: #17202a;
+    white-space: pre-wrap;
+  }
 </style>

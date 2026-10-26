@@ -37,7 +37,12 @@ impl Rule {
             problems.push("A pasta de destino não pode ficar vazia.".to_owned());
         } else {
             let prefix = destination_fixed_prefix(&self.destination);
-            if self.include_subfolders && path_is_same_or_inside(&prefix, &self.source_dir) {
+            if !destination_has_fixed_absolute_base(&prefix) {
+                problems.push(
+                    "O destino precisa começar por uma pasta fixa, escolhida com o botão 'Escolher pasta base'."
+                        .to_owned(),
+                );
+            } else if self.include_subfolders && path_is_same_or_inside(&prefix, &self.source_dir) {
                 problems.push(
                     "Com 'Incluir subpastas' ativado, a pasta de destino precisa ficar fora da pasta monitorada."
                         .to_owned(),
@@ -96,6 +101,13 @@ pub(crate) fn destination_fixed_prefix(destination: &str) -> PathBuf {
             .split_once('{')
             .map_or(destination, |(prefix, _)| prefix),
     )
+}
+
+fn destination_has_fixed_absolute_base(prefix: &Path) -> bool {
+    prefix.is_absolute()
+        && prefix
+            .components()
+            .any(|component| matches!(component, Component::Normal(_)))
 }
 
 pub(crate) fn normalize_path(path: &Path) -> PathBuf {
@@ -232,6 +244,28 @@ mod tests {
         assert_eq!(
             rule.validate(),
             ["A pasta de destino não pode ficar vazia."]
+        );
+    }
+
+    #[test]
+    fn rejects_destination_starting_with_a_marker() {
+        let mut rule = valid_rule();
+        rule.destination = "{cliente}/{YYYY}".to_owned();
+
+        assert_eq!(
+            rule.validate(),
+            ["O destino precisa começar por uma pasta fixa, escolhida com o botão 'Escolher pasta base'."]
+        );
+    }
+
+    #[test]
+    fn rejects_relative_destination() {
+        let mut rule = valid_rule();
+        rule.destination = "Jornais/{YYYY}".to_owned();
+
+        assert_eq!(
+            rule.validate(),
+            ["O destino precisa começar por uma pasta fixa, escolhida com o botão 'Escolher pasta base'."]
         );
     }
 

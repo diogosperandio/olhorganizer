@@ -3,7 +3,7 @@ name = "olhorganizer"
 version = "0.1.0"
 description = "A Tauri App"
 authors = ["you"]
-edition = "2024"
+edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -19,10 +19,14 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 motor = { path = "../crates/motor" }
+monitor = { path = "../crates/monitor", default-features = false }
 tauri = { version = "2", features = [] }
-tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+tokio = { version = "1", features = ["sync"] }
+tracing = "0.1"
+tracing-appender = "0.2"
+tracing-subscriber = { version = "0.3", features = ["fmt"] }
 
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration

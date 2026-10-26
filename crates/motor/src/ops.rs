@@ -23,13 +23,30 @@ const COPY_SUFFIX: &str = ".olhorganizer.tmp";
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Outcome {
-    Moved { to: PathBuf },
-    Copied { to: PathBuf },
-    Skipped { reason: String },
-    WouldMove { to: PathBuf },
-    WouldCopy { to: PathBuf },
+    Moved {
+        to: PathBuf,
+    },
+    Copied {
+        to: PathBuf,
+    },
+    Skipped {
+        reason: String,
+    },
+    /// A copy rule met a file it had already copied (same name, size and
+    /// modification time at the destination). Nothing was written.
+    AlreadyCopied {
+        to: PathBuf,
+    },
+    WouldMove {
+        to: PathBuf,
+    },
+    WouldCopy {
+        to: PathBuf,
+    },
     NotMatched,
-    Failed { error: String },
+    Failed {
+        error: String,
+    },
 }
 
 /// Every file system call the engine makes, so tests can inject failures.
@@ -86,7 +103,13 @@ impl FileSystem for StdFs {
 
     fn copy_synced(&self, from: &Path, to: &Path) -> io::Result<()> {
         fs::copy(from, to)?;
-        OpenOptions::new().write(true).open(to)?.sync_all()
+        let file = OpenOptions::new().write(true).open(to)?;
+        // Keep the original date: the copy stays recognizable as the same
+        // file, and "date from modification time" keeps working on it.
+        if let Ok(modified) = fs::metadata(from)?.modified() {
+            file.set_modified(modified)?;
+        }
+        file.sync_all()
     }
 
     fn remove_file(&self, path: &Path) -> io::Result<()> {
@@ -148,6 +171,17 @@ fn run(fs: &impl FileSystem, file: &Path, rule: &Rule, dry_run: bool) -> Result<
         error: e.to_string(),
     })?;
     guard_against_loops(fs, file, &dir, rule)?;
+    if rule.action == Action::Copy {
+        // Without this, every rescan would copy the (still present) source
+        // again, piling up "name (2).ext", "name (3).ext"...
+        let previous = dir.join(name);
+        let same = fs.metadata(&previous).is_ok_and(|m| {
+            m.is_file() && m.len() == meta.len() && m.modified().ok() == meta.modified().ok()
+        });
+        if same {
+            return Ok(Outcome::AlreadyCopied { to: previous });
+        }
+    }
     let target = resolve_target(fs, &dir, &captures.name, &captures.ext, rule.on_conflict)?;
 
     if dry_run {
@@ -425,6 +459,48 @@ mod tests {
             process(&file, &r, false),
             Outcome::Moved {
                 to: env.root.join("20261022.pdf")
+            }
+        );
+    }
+
+    #[test]
+    fn copy_keeps_the_date_and_is_not_repeated() {
+        let env = env();
+        let file = put(&env.src, "20261022.pdf", "jornal");
+        let old = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
+        fs::File::options()
+            .write(true)
+            .open(&file)
+            .unwrap()
+            .set_modified(old)
+            .unwrap();
+        let r = rule(&env, Action::Copy, ConflictPolicy::Rename);
+        let to = env.dst.join("2026/10/20261022.pdf");
+
+        assert_eq!(
+            process(&file, &r, false),
+            Outcome::Copied { to: to.clone() }
+        );
+        assert_eq!(fs::metadata(&to).unwrap().modified().unwrap(), old);
+
+        // A rescan meets the same source again: no "(2)" copy.
+        let before = snapshot(&env.root);
+        assert_eq!(
+            process(&file, &r, false),
+            Outcome::AlreadyCopied { to: to.clone() }
+        );
+        assert_eq!(
+            process(&file, &r, true),
+            Outcome::AlreadyCopied { to: to.clone() }
+        );
+        assert_eq!(snapshot(&env.root), before);
+
+        // A changed source is a new file and is copied under a new name.
+        fs::write(&file, "jornal corrigido").unwrap();
+        assert_eq!(
+            process(&file, &r, false),
+            Outcome::Copied {
+                to: env.dst.join("2026/10/20261022 (2).pdf")
             }
         );
     }

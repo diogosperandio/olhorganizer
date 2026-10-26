@@ -86,9 +86,9 @@ pub enum RuleProblem {
     #[error("Informe a pasta de destino.")]
     DestinationEmpty,
     #[error(
-        "A pasta de destino precisa ser um caminho completo, começando pela unidade ou pela raiz."
+        "O destino precisa começar por uma pasta fixa, escolhida com o botão 'Escolher pasta base'."
     )]
-    DestinationNotAbsolute,
+    DestinationNeedsFixedFolder,
     #[error("A pasta de destino não pode ser a própria pasta monitorada.")]
     DestinationIsSource,
     #[error(
@@ -121,7 +121,7 @@ impl Rule {
         if self.destination.trim().is_empty() {
             problems.push(RuleProblem::DestinationEmpty);
         } else if !self.destination_prefix().is_absolute() {
-            problems.push(RuleProblem::DestinationNotAbsolute);
+            problems.push(RuleProblem::DestinationNeedsFixedFolder);
         } else if source_ok {
             problems.extend(self.destination_overlap());
         }
@@ -364,11 +364,17 @@ mod tests {
     }
 
     #[test]
-    fn relative_destination() {
-        for destination in ["{YYYY}/{MM}", "Arquivo"] {
+    fn destination_must_start_with_a_fixed_folder() {
+        for destination in [
+            "{cliente}/{YYYY}",
+            "{YYYY}/{MM}",
+            "Jornais/{YYYY}",
+            "Arquivo",
+            "./Jornais",
+        ] {
             assert_eq!(
                 problems(&abs("home/u/NEWS"), destination),
-                [RuleProblem::DestinationNotAbsolute],
+                [RuleProblem::DestinationNeedsFixedFolder],
                 "{destination}"
             );
         }

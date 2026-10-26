@@ -70,7 +70,12 @@ async fn main() -> anyhow::Result<()> {
         ""
     };
     println!("Monitorando {enabled} regra(s){mode}. Pressione Ctrl+C para sair.");
-    for warning in config.validate_all() {
+    let report = config.validate_all();
+    for cycle in &report.cycles {
+        // The monitor still runs; its circuit breaker pauses the looping rule.
+        println!("Erro: {}", cycle.message_pt);
+    }
+    for warning in &report.warnings {
         println!("Aviso: {}", warning.message_pt);
     }
 

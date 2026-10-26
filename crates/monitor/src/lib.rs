@@ -1,6 +1,7 @@
 //! Olhorganizer folder monitor: watches the source folder of every enabled
 //! rule and hands new files to `motor::ops::process`. Has no Tauri dependency.
 
+pub mod breaker;
 pub mod scan;
 pub mod stable;
 
@@ -19,6 +20,7 @@ use tokio::sync::mpsc::{self, UnboundedSender};
 use tokio::task::{JoinHandle, JoinSet};
 use tokio::time::{Instant, interval_at};
 
+use crate::breaker::{BREAKER_MESSAGE, Breaker, Identity, WriteLog};
 use crate::stable::{StableConfig, Unstable, wait_until_stable};
 
 /// Something that happened while monitoring. Messages are in pt-BR.
@@ -33,7 +35,9 @@ pub enum MonitorEvent {
         rule_id: Uuid,
         message_pt: String,
     },
-    /// The source folder or destination disk is missing; retried periodically.
+    /// The source folder or destination disk is missing (retried
+    /// periodically), or the circuit breaker stopped the rule (resumed only by
+    /// [`Monitor::resume`] or a changed rule).
     RulePaused {
         rule_id: Uuid,
         reason_pt: String,
@@ -79,7 +83,7 @@ impl MonitorEvent {
             Self::RuleError { message_pt, .. } | Self::NetworkHint { message_pt, .. } => {
                 message_pt.clone()
             }
-            Self::RulePaused { reason_pt, .. } => format!("Regra pausada. {reason_pt}"),
+            Self::RulePaused { reason_pt, .. } => reason_pt.clone(),
             Self::RuleResumed { .. } => "Regra retomada.".to_owned(),
         }
     }
@@ -122,6 +126,7 @@ fn describe_outcome(name: &str, outcome: &Outcome) -> String {
             format!("{name} seria copiado para {} (simulação)", place(to))
         }
         Outcome::Skipped { reason } => format!("{name} ignorado: {reason}"),
+        Outcome::AlreadyCopied { to } => format!("{name} já tinha sido copiado para {}", place(to)),
         Outcome::NotMatched => format!("{name} não corresponde ao filtro"),
         Outcome::Failed { error } => format!("Erro ao processar {name}: {error}"),
     }
@@ -140,6 +145,12 @@ pub struct MonitorOptions {
     pub retry_unavailable: Duration,
     /// Length of one minute in `CheckMode::Interval`; shortened only in tests.
     pub minute: Duration,
+    /// Watcher events for a file the app itself wrote this recently are ignored.
+    pub own_event_grace: Duration,
+    /// Circuit breaker: a rule processing the same file more than
+    /// `breaker_max_passes` times within `breaker_window` is paused.
+    pub breaker_window: Duration,
+    pub breaker_max_passes: u32,
 }
 
 impl Default for MonitorOptions {
@@ -151,6 +162,9 @@ impl Default for MonitorOptions {
             rescan_every: Duration::from_secs(10 * 60),
             retry_unavailable: Duration::from_secs(60),
             minute: Duration::from_secs(60),
+            own_event_grace: Duration::from_secs(5),
+            breaker_window: Duration::from_secs(10 * 60),
+            breaker_max_passes: 3,
         }
     }
 }
@@ -164,6 +178,8 @@ struct Shared {
     rules: Arc<RwLock<Vec<Rule>>>,
     /// Files being processed right now, by any rule.
     in_flight: Arc<Mutex<HashSet<PathBuf>>>,
+    /// Files the app moved or copied recently.
+    writes: Arc<Mutex<WriteLog>>,
 }
 
 impl Shared {
@@ -198,6 +214,7 @@ impl Monitor {
                 events: event_tx,
                 rules: Arc::default(),
                 in_flight: Arc::default(),
+                writes: Arc::default(),
             },
             runtime: Handle::current(),
             tasks: HashMap::new(),
@@ -234,6 +251,17 @@ impl Monitor {
                 .runtime
                 .spawn(run_rule(rule.clone(), self.shared.clone()));
             self.tasks.insert(rule.id, (rule, handle));
+        }
+    }
+
+    /// Restarts a rule, e.g. after the circuit breaker paused it. Its pass
+    /// counts start from zero.
+    pub fn resume(&mut self, rule_id: Uuid) {
+        if let Some((rule, handle)) = self.tasks.get_mut(&rule_id) {
+            handle.abort();
+            *handle = self
+                .runtime
+                .spawn(run_rule(rule.clone(), self.shared.clone()));
         }
     }
 
@@ -293,49 +321,78 @@ impl Drop for Monitor {
     }
 }
 
-/// Runs one rule until aborted: watch or poll while its folders are
-/// available, pause and retry while they are not.
+/// Why a rule's watch or poll loop ended.
+enum Stop {
+    /// Folders missing; retried periodically.
+    Unavailable(String),
+    /// The circuit breaker tripped; the rule stays paused.
+    Tripped,
+}
+
+/// Per-rule state shared with its file tasks.
+struct RuleCtx {
+    rule: Rule,
+    shared: Shared,
+    breaker: Breaker,
+}
+
+/// Runs one rule until aborted or tripped: watch or poll while its folders
+/// are available, pause and retry while they are not.
 async fn run_rule(rule: Rule, shared: Shared) {
+    let breaker = Breaker::new(
+        shared.options.breaker_window,
+        shared.options.breaker_max_passes,
+    );
+    let ctx = Arc::new(RuleCtx {
+        rule,
+        shared,
+        breaker,
+    });
+    let (rule, shared) = (&ctx.rule, &ctx.shared);
     // Per-file tasks; dropped (and aborted) together with this task.
     let mut files = JoinSet::new();
     let mut paused = false;
     let mut limit_reported = false;
     loop {
-        let reason = match available(&rule).await {
+        let stop = match available(rule).await {
             Ok(()) => {
                 if paused {
                     paused = false;
                     shared.emit(MonitorEvent::RuleResumed { rule_id: rule.id });
                 }
                 match rule.check_mode {
-                    CheckMode::Instant => {
-                        watch(&rule, &shared, &mut files, &mut limit_reported).await
-                    }
-                    CheckMode::Interval { minutes } => {
-                        poll(&rule, &shared, &mut files, minutes).await
-                    }
+                    CheckMode::Instant => watch(&ctx, &mut files, &mut limit_reported).await,
+                    CheckMode::Interval { minutes } => poll(&ctx, &mut files, minutes).await,
                 }
             }
-            Err(reason) => reason,
+            Err(reason) => Stop::Unavailable(reason),
         };
-        if !paused {
-            paused = true;
-            shared.emit(MonitorEvent::RulePaused {
-                rule_id: rule.id,
-                reason_pt: reason,
-            });
+        match stop {
+            Stop::Tripped => {
+                tracing::warn!(rule = %rule.name, "circuit breaker tripped");
+                shared.emit(MonitorEvent::RulePaused {
+                    rule_id: rule.id,
+                    reason_pt: BREAKER_MESSAGE.to_owned(),
+                });
+                return;
+            }
+            Stop::Unavailable(reason) => {
+                if !paused {
+                    paused = true;
+                    shared.emit(MonitorEvent::RulePaused {
+                        rule_id: rule.id,
+                        reason_pt: format!("Regra pausada: {reason}"),
+                    });
+                }
+            }
         }
         tokio::time::sleep(shared.options.retry_unavailable).await;
     }
 }
 
-/// Instant mode. Returns the reason when the rule has to pause.
-async fn watch(
-    rule: &Rule,
-    shared: &Shared,
-    files: &mut JoinSet<()>,
-    limit_reported: &mut bool,
-) -> String {
+/// Instant mode. Returns why the rule has to pause.
+async fn watch(ctx: &Arc<RuleCtx>, files: &mut JoinSet<()>, limit_reported: &mut bool) -> Stop {
+    let (rule, shared) = (&ctx.rule, &ctx.shared);
     let mode = if rule.include_subfolders {
         RecursiveMode::Recursive
     } else {
@@ -353,16 +410,16 @@ async fn watch(
             if is_watch_limit(&e) {
                 report_watch_limit(rule, shared, limit_reported);
             }
-            return format!(
+            return Stop::Unavailable(format!(
                 "Não foi possível acompanhar a pasta {}: {e}",
                 rule.source_dir.display()
-            );
+            ));
         }
     };
 
     // Startup scan: files that arrived before the watcher.
-    if let Err(reason) = scan_tree(rule, shared, files, &rule.source_dir).await {
-        return reason;
+    if let Err(reason) = scan_tree(ctx, files, &rule.source_dir).await {
+        return Stop::Unavailable(reason);
     }
 
     let options = &shared.options;
@@ -381,49 +438,52 @@ async fn watch(
                 for path in paths {
                     let is_dir = std::fs::symlink_metadata(&path).is_ok_and(|m| m.is_dir());
                     if !is_dir {
-                        dispatch(rule, shared, files, path);
+                        dispatch(ctx, files, path, true);
                     } else if rule.include_subfolders && rule.watches(&path.join("_")) {
                         // A folder moved or copied in may bring files that
                         // never produce events of their own.
-                        if let Err(reason) = scan_tree(rule, shared, files, &path).await {
+                        if let Err(reason) = scan_tree(ctx, files, &path).await {
                             tracing::warn!(rule = %rule.name, %reason, "new folder not scanned");
                         }
                     }
                 }
                 if let Err(reason) = available(rule).await {
-                    return reason;
+                    return Stop::Unavailable(reason);
                 }
             }
             _ = rescan.tick() => {
-                if let Err(reason) = scan_tree(rule, shared, files, &rule.source_dir).await {
-                    return reason;
+                if let Err(reason) = scan_tree(ctx, files, &rule.source_dir).await {
+                    return Stop::Unavailable(reason);
                 }
             }
             _ = health.tick() => {
                 if let Err(reason) = available(rule).await {
-                    return reason;
+                    return Stop::Unavailable(reason);
                 }
             }
+            () = ctx.breaker.tripped() => return Stop::Tripped,
             Some(_) = files.join_next(), if !files.is_empty() => {}
         }
     }
 }
 
-/// Interval mode. Returns the reason when the rule has to pause.
-async fn poll(rule: &Rule, shared: &Shared, files: &mut JoinSet<()>, minutes: u32) -> String {
-    let period = shared.options.minute * minutes.max(1);
+/// Interval mode. Returns why the rule has to pause.
+async fn poll(ctx: &Arc<RuleCtx>, files: &mut JoinSet<()>, minutes: u32) -> Stop {
+    let rule = &ctx.rule;
+    let period = ctx.shared.options.minute * minutes.max(1);
     // The first tick fires at once, which is the startup scan.
     let mut tick = tokio::time::interval(period);
     loop {
         tokio::select! {
             _ = tick.tick() => {
                 if let Err(reason) = available(rule).await {
-                    return reason;
+                    return Stop::Unavailable(reason);
                 }
-                if let Err(reason) = scan_tree(rule, shared, files, &rule.source_dir).await {
-                    return reason;
+                if let Err(reason) = scan_tree(ctx, files, &rule.source_dir).await {
+                    return Stop::Unavailable(reason);
                 }
             }
+            () = ctx.breaker.tripped() => return Stop::Tripped,
             Some(_) = files.join_next(), if !files.is_empty() => {}
         }
     }
@@ -488,19 +548,14 @@ async fn available(rule: &Rule) -> Result<(), String> {
 }
 
 /// Dispatches the files in `root`, and below it if the rule includes subfolders.
-async fn scan_tree(
-    rule: &Rule,
-    shared: &Shared,
-    files: &mut JoinSet<()>,
-    root: &Path,
-) -> Result<(), String> {
+async fn scan_tree(ctx: &Arc<RuleCtx>, files: &mut JoinSet<()>, root: &Path) -> Result<(), String> {
     let dir = root.to_path_buf();
-    let recursive = rule.include_subfolders;
+    let recursive = ctx.rule.include_subfolders;
     let listed = tokio::task::spawn_blocking(move || scan::list_files(&dir, recursive)).await;
     match listed {
         Ok(Ok(paths)) => {
             for path in paths {
-                dispatch(rule, shared, files, path);
+                dispatch(ctx, files, path, false);
             }
             Ok(())
         }
@@ -513,12 +568,27 @@ async fn scan_tree(
 }
 
 /// Starts processing `path` if this rule owns it and nobody else is on it.
-fn dispatch(rule: &Rule, shared: &Shared, files: &mut JoinSet<()>, path: PathBuf) {
+/// `from_watcher` marks watcher events, which are ignored for files the app
+/// itself just wrote.
+fn dispatch(ctx: &Arc<RuleCtx>, files: &mut JoinSet<()>, path: PathBuf, from_watcher: bool) {
+    let (rule, shared) = (&ctx.rule, &ctx.shared);
     let temporary = path
         .file_name()
         .is_none_or(|n| is_temporary(&n.to_string_lossy()));
     if temporary {
         return;
+    }
+    if from_watcher {
+        let own = std::fs::metadata(&path).is_ok_and(|meta| {
+            shared
+                .writes
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .is_own_write(&path, &meta, shared.options.own_event_grace)
+        });
+        if own {
+            return;
+        }
     }
     let owner = {
         let rules = shared.rules.read().unwrap_or_else(PoisonError::into_inner);
@@ -531,9 +601,9 @@ fn dispatch(rule: &Rule, shared: &Shared, files: &mut JoinSet<()>, path: PathBuf
         return;
     };
 
-    let rule = rule.clone();
-    let shared = shared.clone();
+    let ctx = Arc::clone(ctx);
     files.spawn(async move {
+        let (rule, shared) = (&ctx.rule, &ctx.shared);
         match wait_until_stable(&path, shared.options.stable).await {
             Ok(()) => {}
             Err(Unstable::Gone) => return,
@@ -550,25 +620,59 @@ fn dispatch(rule: &Rule, shared: &Shared, files: &mut JoinSet<()>, path: PathBuf
         }
 
         let dry_run = shared.options.dry_run;
-        let (file, rule_id) = (path.clone(), rule.id);
+        // A dry run changes nothing, so it cannot loop.
+        let identity = if dry_run {
+            None
+        } else {
+            let Ok(meta) = std::fs::metadata(&path) else {
+                return;
+            };
+            let identity = Identity::of(&path, &meta);
+            if !ctx.breaker.allows(&identity) {
+                return;
+            }
+            Some(identity)
+        };
+
+        let (file, task_ctx) = (path.clone(), Arc::clone(&ctx));
         // The guard moves into the blocking call: it outlives this task if
         // the task is aborted mid-move, so nobody else picks the file up.
         let outcome = tokio::task::spawn_blocking(move || {
             let _guard = guard;
-            process(&file, &rule, dry_run)
+            let outcome = process(&file, &task_ctx.rule, dry_run);
+            if let Outcome::Moved { to } | Outcome::Copied { to } = &outcome {
+                remember_write(&task_ctx.shared, to);
+            }
+            outcome
         })
-            .await
-            .unwrap_or_else(|e| Outcome::Failed {
-                error: format!("Falha interna ao processar o arquivo: {e}"),
-            });
-        if outcome != Outcome::NotMatched {
+        .await
+        .unwrap_or_else(|e| Outcome::Failed {
+            error: format!("Falha interna ao processar o arquivo: {e}"),
+        });
+
+        if let (Outcome::Moved { .. } | Outcome::Copied { .. }, Some(identity)) =
+            (&outcome, identity)
+        {
+            ctx.breaker.record(identity);
+        }
+        if !matches!(outcome, Outcome::NotMatched | Outcome::AlreadyCopied { .. }) {
             shared.emit(MonitorEvent::FileProcessed {
-                rule_id,
+                rule_id: rule.id,
                 file: path.clone(),
                 outcome,
             });
         }
     });
+}
+
+fn remember_write(shared: &Shared, path: &Path) {
+    if let Ok(meta) = std::fs::metadata(path) {
+        shared
+            .writes
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .record(path.to_path_buf(), &meta, shared.options.breaker_window);
+    }
 }
 
 /// Marks a path as being processed until dropped.

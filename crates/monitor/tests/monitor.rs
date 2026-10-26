@@ -25,6 +25,9 @@ fn options() -> MonitorOptions {
         rescan_every: Duration::from_secs(3600),
         retry_unavailable: Duration::from_millis(300),
         minute: Duration::from_millis(300),
+        own_event_grace: Duration::from_secs(5),
+        breaker_window: Duration::from_secs(600),
+        breaker_max_passes: 3,
     }
 }
 
@@ -185,13 +188,13 @@ async fn missing_folder_pauses_then_resumes() {
 #[tokio::test(flavor = "multi_thread")]
 async fn invalid_rule_is_reported_and_not_started() {
     let env = env();
-    let mut r = rule(&env, CheckMode::Instant);
+    let mut r = subfolder_rule(&env);
     r.destination = format!("{}/{{YYYY}}", env.src.display());
     let (_monitor, mut rx) = start(r.clone());
 
     let event = next_event(&mut rx).await;
     assert!(
-        matches!(&event, MonitorEvent::RuleError { message_pt, .. } if message_pt.contains("dentro da pasta monitorada")),
+        matches!(&event, MonitorEvent::RuleError { message_pt, .. } if message_pt.contains("precisa ficar fora da pasta monitorada")),
         "{event:?}"
     );
 }
@@ -366,4 +369,108 @@ fn describes_subfolder_files_relative_to_the_source() {
         event.describe_pt(),
         "IMG_0001.jpg copiado para /media/ana/HD/2025"
     );
+}
+
+/// Two rules sending files to each other, written to config.json by hand so
+/// validation never ran. The breaker must stop the bouncing.
+#[tokio::test(flavor = "multi_thread")]
+async fn circuit_breaker_pauses_a_rule_cycle() {
+    let dir = tempfile::tempdir().unwrap();
+    let (a_dir, b_dir) = (dir.path().join("A"), dir.path().join("B"));
+    fs::create_dir_all(&a_dir).unwrap();
+    fs::create_dir_all(&b_dir).unwrap();
+    let rule_between = |name: &str, from: &Path, to: &Path| Rule {
+        id: Uuid::new_v4(),
+        name: name.into(),
+        enabled: true,
+        source_dir: from.to_path_buf(),
+        include_subfolders: false,
+        filter: "*.pdf".into(),
+        destination: to.display().to_string(),
+        action: Action::Move,
+        date_source: DateSource::Detected,
+        check_mode: CheckMode::Instant,
+        on_conflict: ConflictPolicy::Rename,
+        priority: 0,
+    };
+    let config_path = dir.path().join("config.json");
+    let hand_written = Config {
+        rules: vec![
+            rule_between("A", &a_dir, &b_dir),
+            rule_between("B", &b_dir, &a_dir),
+        ],
+        ..Config::default()
+    };
+    assert_eq!(hand_written.validate_all().cycles.len(), 1);
+    fs::write(&config_path, serde_json::to_string(&hand_written).unwrap()).unwrap();
+    let config = Config::load(&config_path).unwrap();
+
+    fs::write(a_dir.join("relatório.pdf"), "ida e volta").unwrap();
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    // Own write events are ignored, so rescans drive the bouncing.
+    let mut monitor = Monitor::start_with(
+        &config,
+        tx,
+        MonitorOptions {
+            rescan_every: Duration::from_millis(400),
+            ..options()
+        },
+    );
+
+    let mut passes: std::collections::HashMap<Uuid, u32> = Default::default();
+    let tripped = loop {
+        let event = timeout(Duration::from_secs(30), rx.recv())
+            .await
+            .expect("breaker never tripped")
+            .unwrap();
+        match event {
+            MonitorEvent::FileProcessed {
+                rule_id, outcome, ..
+            } => {
+                assert!(matches!(outcome, Outcome::Moved { .. }), "{outcome:?}");
+                *passes.entry(rule_id).or_default() += 1;
+            }
+            MonitorEvent::RulePaused { rule_id, reason_pt } => {
+                assert_eq!(reason_pt, monitor::breaker::BREAKER_MESSAGE);
+                break rule_id;
+            }
+            other => panic!("{other:?}"),
+        }
+    };
+    assert!(passes.values().all(|&n| n <= 3), "{passes:?}");
+
+    // Bouncing stops: the other rule may deliver once more, then nothing.
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    while let Ok(event) = rx.try_recv() {
+        if let MonitorEvent::FileProcessed { rule_id, .. } = event {
+            *passes.entry(rule_id).or_default() += 1;
+        }
+    }
+    assert!(passes.values().all(|&n| n <= 3), "{passes:?}");
+
+    // Still exactly one file: no "(N)" copies, nothing deleted.
+    let pdfs: Vec<_> = [&a_dir, &b_dir]
+        .iter()
+        .flat_map(|d| fs::read_dir(d).unwrap())
+        .map(|e| e.unwrap().file_name())
+        .collect();
+    assert_eq!(pdfs, ["relatório.pdf"]);
+
+    // Resuming is the user's call: the rule runs again from zero and passes
+    // the file on, and the partner, whose count is still full, stops it there.
+    monitor.resume(tripped);
+    let mut resumed_moved = false;
+    loop {
+        match next_event(&mut rx).await {
+            MonitorEvent::FileProcessed { rule_id, .. } if rule_id == tripped => {
+                resumed_moved = true;
+            }
+            MonitorEvent::RulePaused { rule_id, reason_pt } if rule_id != tripped => {
+                assert_eq!(reason_pt, monitor::breaker::BREAKER_MESSAGE);
+                break;
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+    assert!(resumed_moved);
 }

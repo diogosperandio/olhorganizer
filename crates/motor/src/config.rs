@@ -21,6 +21,21 @@ pub struct RuleWarning {
     pub message_pt: String,
 }
 
+/// Rules that would hand files to each other forever.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuleCycle {
+    pub rule_ids: Vec<Uuid>,
+    pub message_pt: String,
+}
+
+/// Result of [`Config::validate_all`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ConfigReport {
+    /// Blocking: a config with cycles must not be saved.
+    pub cycles: Vec<RuleCycle>,
+    pub warnings: Vec<RuleWarning>,
+}
+
 /// Current version of the config file format.
 pub const CONFIG_VERSION: u32 = 1;
 
@@ -108,43 +123,157 @@ impl Config {
         result
     }
 
-    /// Enabled rules, lowest priority value first. Ties keep their file order.
-    /// Warns when a rule's destination lies in the area another enabled rule
-    /// watches (its folder, or its whole tree with subfolders), so files would
-    /// be processed twice. A rule overlapping itself is an error reported by
+    /// Checks how the enabled rules feed each other. There is an edge A -> B
+    /// when A's destination lies in the area B watches (B's folder, or its
+    /// whole tree with subfolders). Cycles are errors: files would bounce
+    /// between the rules forever. Other edges are warnings: files are
+    /// processed twice. A rule overlapping itself is reported by
     /// [`Rule::validate`] instead.
-    pub fn validate_all(&self) -> Vec<RuleWarning> {
-        let enabled: Vec<&Rule> = self.rules.iter().filter(|r| r.enabled).collect();
-        let mut warnings = Vec::new();
-        for rule in &enabled {
-            if !rule.destination_prefix().is_absolute() {
+    pub fn validate_all(&self) -> ConfigReport {
+        let rules: Vec<&Rule> = self
+            .rules
+            .iter()
+            .filter(|r| r.enabled && r.destination_prefix().is_absolute())
+            .collect();
+        let edges: Vec<Vec<usize>> = rules
+            .iter()
+            .enumerate()
+            .map(|(a, from)| {
+                rules
+                    .iter()
+                    .enumerate()
+                    .filter(|&(b, to)| a != b && from.destination_reaches(to))
+                    .map(|(b, _)| b)
+                    .collect()
+            })
+            .collect();
+        let reach: Vec<Vec<bool>> = (0..rules.len()).map(|a| reachable(&edges, a)).collect();
+
+        // Rules that can reach each other form a cycle.
+        let mut cycle_of: Vec<Option<usize>> = vec![None; rules.len()];
+        let mut cycles = Vec::new();
+        for a in 0..rules.len() {
+            if cycle_of[a].is_some() || !reach[a][a] {
                 continue;
             }
-            for other in &enabled {
-                if other.id == rule.id || !rule.destination_reaches(other) {
+            let members: Vec<usize> = (0..rules.len())
+                .filter(|&b| reach[a][b] && reach[b][a])
+                .collect();
+            for &m in &members {
+                cycle_of[m] = Some(cycles.len());
+            }
+            let names: Vec<&str> = members.iter().map(|&m| rules[m].name.as_str()).collect();
+            cycles.push(RuleCycle {
+                rule_ids: members.iter().map(|&m| rules[m].id).collect(),
+                message_pt: cycle_message(&names),
+            });
+        }
+
+        let mut warnings = Vec::new();
+        for (a, targets) in edges.iter().enumerate() {
+            for &b in targets {
+                if cycle_of[a].is_some() && cycle_of[a] == cycle_of[b] {
                     continue;
                 }
-                let verb = match rule.action {
+                let verb = match rules[a].action {
                     Action::Move => "movidos",
                     Action::Copy => "copiados",
                 };
                 warnings.push(RuleWarning {
-                    rule_id: rule.id,
-                    other_rule_id: other.id,
+                    rule_id: rules[a].id,
+                    other_rule_id: rules[b].id,
                     message_pt: format!(
                         "Os arquivos {verb} pela regra '{}' serão processados de novo pela regra '{}'.",
-                        rule.name, other.name
+                        rules[a].name, rules[b].name
                     ),
                 });
             }
         }
-        warnings
+        ConfigReport { cycles, warnings }
     }
 
+    /// Adds `rule`, or replaces the rule with the same id, if the rule is
+    /// valid and creates no cycle between rules. Returns the remaining
+    /// warnings. Changes only this value; call [`Config::save`] to write it.
+    pub fn save_rule(&mut self, rule: Rule) -> Result<Vec<RuleWarning>, MotorError> {
+        let mut candidate = self.clone();
+        candidate.put_rule(rule)?;
+        candidate.replace(self)
+    }
+
+    /// Imports the rules of another config file, replacing rules with the
+    /// same id and adding the others; settings are not imported. Nothing
+    /// changes if any rule is invalid or the result has a cycle.
+    pub fn import(&mut self, path: &Path) -> Result<Vec<RuleWarning>, MotorError> {
+        let bytes = fs::read(path).map_err(|source| io_error(path, source))?;
+        let imported: Config =
+            serde_json::from_slice(&bytes).map_err(|source| MotorError::InvalidImport {
+                path: path.to_path_buf(),
+                source,
+            })?;
+        let mut candidate = self.clone();
+        for rule in imported.rules {
+            candidate.put_rule(rule)?;
+        }
+        candidate.replace(self)
+    }
+
+    fn put_rule(&mut self, rule: Rule) -> Result<(), MotorError> {
+        let problems = rule.validate();
+        if !problems.is_empty() {
+            return Err(MotorError::InvalidRule {
+                name: rule.name,
+                problems,
+            });
+        }
+        match self.rules.iter_mut().find(|r| r.id == rule.id) {
+            Some(existing) => *existing = rule,
+            None => self.rules.push(rule),
+        }
+        Ok(())
+    }
+
+    /// Becomes `target` unless the rules form a cycle.
+    fn replace(self, target: &mut Config) -> Result<Vec<RuleWarning>, MotorError> {
+        let report = self.validate_all();
+        if !report.cycles.is_empty() {
+            return Err(MotorError::RuleCycles(report.cycles));
+        }
+        *target = self;
+        Ok(report.warnings)
+    }
+
+    /// Enabled rules, lowest priority value first. Ties keep their file order.
     pub fn rules_by_priority(&self) -> Vec<&Rule> {
         let mut rules: Vec<&Rule> = self.rules.iter().filter(|r| r.enabled).collect();
         rules.sort_by_key(|r| r.priority);
         rules
+    }
+}
+
+/// Which nodes can be reached from `start` in one or more steps.
+fn reachable(edges: &[Vec<usize>], start: usize) -> Vec<bool> {
+    let mut seen = vec![false; edges.len()];
+    let mut stack = edges[start].clone();
+    while let Some(node) = stack.pop() {
+        if !std::mem::replace(&mut seen[node], true) {
+            stack.extend(&edges[node]);
+        }
+    }
+    seen
+}
+
+fn cycle_message(names: &[&str]) -> String {
+    let quoted: Vec<String> = names.iter().map(|n| format!("'{n}'")).collect();
+    match quoted.as_slice() {
+        [a, b] => {
+            format!("As regras {a} e {b} moveriam os arquivos de uma para a outra sem parar.")
+        }
+        [rest @ .., last] => format!(
+            "As regras {} e {last} moveriam os arquivos entre si sem parar.",
+            rest.join(", ")
+        ),
+        [] => String::new(),
     }
 }
 
@@ -288,64 +417,180 @@ mod tests {
         assert!(!config.rules[0].include_subfolders);
     }
 
-    #[test]
-    fn warns_when_a_destination_feeds_another_rule() {
-        // Paths need not exist: the check is textual.
-        let rule_at = |name: &str, source: &str, destination: &str, subfolders: bool| Rule {
-            source_dir: PathBuf::from(source),
-            destination: destination.into(),
-            include_subfolders: subfolders,
-            ..rule(name, 0, true)
-        };
-        let a = rule_at("A", "/home/u/NEWS", "/home/u/Arquivo/{YYYY}", false);
-        let b_tree = rule_at("B", "/home/u/Arquivo", "/home/u/Fora", true);
-        let b_top = rule_at("B", "/home/u/Arquivo", "/home/u/Fora", false);
+    fn abs(rel: &str) -> String {
+        if cfg!(windows) {
+            format!("C:\\{}", rel.replace('/', "\\"))
+        } else {
+            format!("/{rel}")
+        }
+    }
 
-        let config = Config {
-            rules: vec![a.clone(), b_tree.clone()],
+    /// A rule watching `source` and sending files to `destination`
+    /// (`/`-separated, made absolute). The folders need not exist.
+    fn rule_at(name: &str, source: &str, destination: &str, subfolders: bool) -> Rule {
+        Rule {
+            source_dir: PathBuf::from(abs(source)),
+            destination: abs(destination),
+            include_subfolders: subfolders,
+            date_source: DateSource::Detected,
+            ..rule(name, 0, true)
+        }
+    }
+
+    fn config(rules: &[&Rule]) -> Config {
+        Config {
+            rules: rules.iter().map(|&r| r.clone()).collect(),
             ..Config::default()
-        };
-        let warnings = config.validate_all();
-        assert_eq!(warnings.len(), 1);
+        }
+    }
+
+    fn cycle_messages(config: &Config) -> Vec<String> {
+        config
+            .validate_all()
+            .cycles
+            .into_iter()
+            .map(|c| c.message_pt)
+            .collect()
+    }
+
+    #[test]
+    fn chain_is_allowed_with_a_warning() {
+        let a = rule_at("A", "u/NEWS", "u/Arquivo/{YYYY}", false);
+        let b_tree = rule_at("B", "u/Arquivo", "u/Fora", true);
+        let report = config(&[&a, &b_tree]).validate_all();
+        assert_eq!(report.cycles, []);
+        assert_eq!(report.warnings.len(), 1);
+        let warning = &report.warnings[0];
+        assert_eq!((warning.rule_id, warning.other_rule_id), (a.id, b_tree.id));
         assert_eq!(
-            (warnings[0].rule_id, warnings[0].other_rule_id),
-            (a.id, b_tree.id)
-        );
-        assert_eq!(
-            warnings[0].message_pt,
+            warning.message_pt,
             "Os arquivos movidos pela regra 'A' serão processados de novo pela regra 'B'."
         );
 
         // B watches only its top level; A's files go into a year subfolder.
-        let config = Config {
-            rules: vec![a.clone(), b_top.clone()],
-            ..Config::default()
-        };
-        assert!(config.validate_all().is_empty());
+        let b_top = rule_at("B", "u/Arquivo", "u/Fora", false);
+        assert_eq!(
+            config(&[&a, &b_top]).validate_all(),
+            ConfigReport::default()
+        );
 
         // ...unless A drops them straight into B's folder.
-        let a_flat = Rule {
-            destination: "/home/u/Arquivo".into(),
-            ..a.clone()
-        };
-        let config = Config {
-            rules: vec![a_flat, b_top],
-            ..Config::default()
-        };
-        assert_eq!(config.validate_all().len(), 1);
+        let a_flat = rule_at("A", "u/NEWS", "u/Arquivo", false);
+        assert_eq!(config(&[&a_flat, &b_top]).validate_all().warnings.len(), 1);
 
         // Disabled rules do not count.
-        let config = Config {
-            rules: vec![
-                a,
-                Rule {
-                    enabled: false,
-                    ..b_tree
-                },
-            ],
-            ..Config::default()
+        let b_off = Rule {
+            enabled: false,
+            ..b_tree.clone()
         };
-        assert!(config.validate_all().is_empty());
+        assert_eq!(
+            config(&[&a, &b_off]).validate_all(),
+            ConfigReport::default()
+        );
+
+        // save_rule accepts the chain and hands back the warning.
+        let mut cfg = config(&[&a]);
+        assert_eq!(cfg.save_rule(b_tree).unwrap().len(), 1);
+        assert_eq!(cfg.rules.len(), 2);
+    }
+
+    #[test]
+    fn two_rule_cycle_is_rejected() {
+        // A drops files straight into B's folder and B into A's.
+        let a = rule_at("A", "u/A", "u/B", false);
+        let b = rule_at("B", "u/B", "u/A", false);
+        // With subfolders on, B's year folders inside A's tree loop as well.
+        let a_tree = rule_at("A", "u/A", "u/B", true);
+        let b_into_tree = rule_at("B", "u/B", "u/A/{YYYY}", false);
+        assert_eq!(cycle_messages(&config(&[&a_tree, &b_into_tree])).len(), 1);
+        // ...but not when A only watches its top level.
+        assert_eq!(cycle_messages(&config(&[&a, &b_into_tree])).len(), 0);
+
+        assert_eq!(
+            cycle_messages(&config(&[&a, &b])),
+            ["As regras 'A' e 'B' moveriam os arquivos de uma para a outra sem parar."]
+        );
+
+        let mut cfg = config(&[&a]);
+        let before = cfg.clone();
+        let err = cfg.save_rule(b).unwrap_err();
+        assert!(
+            matches!(err, MotorError::RuleCycles(ref c) if c.len() == 1),
+            "{err:?}"
+        );
+        assert_eq!(
+            err.to_string(),
+            "As regras 'A' e 'B' moveriam os arquivos de uma para a outra sem parar."
+        );
+        assert_eq!(cfg, before);
+    }
+
+    #[test]
+    fn three_rule_cycle_is_rejected() {
+        let a = rule_at("A", "u/A", "u/B", false);
+        let b = rule_at("B", "u/B", "u/C", false);
+        let c = rule_at("C", "u/C", "u/A", false);
+        let report = config(&[&a, &b, &c]).validate_all();
+        assert_eq!(report.cycles.len(), 1);
+        assert_eq!(report.cycles[0].rule_ids, [a.id, b.id, c.id]);
+        assert_eq!(
+            report.cycles[0].message_pt,
+            "As regras 'A', 'B' e 'C' moveriam os arquivos entre si sem parar."
+        );
+        // Edges inside the cycle are not repeated as warnings.
+        assert_eq!(report.warnings, []);
+
+        let mut cfg = config(&[&a, &b]);
+        assert!(matches!(cfg.save_rule(c), Err(MotorError::RuleCycles(_))));
+        assert_eq!(cfg.rules.len(), 2);
+    }
+
+    #[test]
+    fn import_that_creates_a_cycle_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = rule_at("A", "u/A", "u/B", false);
+        let b = rule_at("B", "u/B", "u/A", false);
+        let exported = dir.path().join("regras.json");
+        config(&[&b]).save(&exported).unwrap();
+
+        let mut cfg = config(&[&a]);
+        let before = cfg.clone();
+        assert!(matches!(
+            cfg.import(&exported),
+            Err(MotorError::RuleCycles(_))
+        ));
+        assert_eq!(cfg, before);
+
+        // Without the cycle the same import goes through.
+        let mut cfg = Config::default();
+        assert_eq!(cfg.import(&exported).unwrap(), []);
+        assert_eq!(cfg.rules, [b]);
+    }
+
+    #[test]
+    fn save_rule_rejects_an_invalid_rule() {
+        let mut cfg = Config::default();
+        let bad = rule_at("Ruim", "u/NEWS", "u/NEWS", false);
+        let err = cfg.save_rule(bad).unwrap_err();
+        assert!(matches!(err, MotorError::InvalidRule { .. }), "{err:?}");
+        assert!(err.to_string().contains("'Ruim'"), "{err}");
+        assert!(cfg.rules.is_empty());
+    }
+
+    #[test]
+    fn import_of_a_broken_file_is_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("regras.json");
+        fs::write(&path, "não é json").unwrap();
+        let mut cfg = Config::default();
+        assert!(matches!(
+            cfg.import(&path),
+            Err(MotorError::InvalidImport { .. })
+        ));
+        assert!(matches!(
+            cfg.import(&dir.path().join("sumiu.json")),
+            Err(MotorError::Io { .. })
+        ));
     }
 
     #[test]
@@ -374,7 +619,7 @@ mod tests {
         let config = Config::load(&path).unwrap();
         assert_eq!(config.rules.len(), 3);
         assert!(config.rules.iter().any(|r| r.include_subfolders));
-        assert_eq!(config.validate_all(), []);
+        assert_eq!(config.validate_all(), ConfigReport::default());
         if cfg!(unix) {
             for rule in &config.rules {
                 assert!(

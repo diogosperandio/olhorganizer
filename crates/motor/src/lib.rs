@@ -12,7 +12,7 @@ mod rule;
 #[cfg(test)]
 mod testutil;
 
-pub use config::{CONFIG_VERSION, Config, RuleWarning, Settings};
+pub use config::{CONFIG_VERSION, Config, ConfigReport, RuleCycle, RuleWarning, Settings};
 pub use destination::{DestinationError, FileMeta, build_destination};
 pub use error::MotorError;
 pub use filter::{

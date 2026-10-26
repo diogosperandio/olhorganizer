@@ -1,0 +1,41 @@
+{
+  "version": 1,
+  "rules": [
+    {
+      "id": "bbf2fcf0-7bcf-4d9a-b1f8-bccf3f720101",
+      "name": "Organizar jornais",
+      "enabled": true,
+      "source_dir": "/home/diogo/Downloads/NEWS",
+      "filter": "{YYYY}{MM}{DD}.pdf",
+      "destination": "/home/diogo/Downloads/NEWS/{YYYY}/{MM}",
+      "action": "move",
+      "date_source": "file_name",
+      "check_mode": "instant",
+      "on_conflict": "rename",
+      "priority": 10
+    },
+    {
+      "id": "bbf2fcf0-7bcf-4d9a-b1f8-bccf3f720102",
+      "name": "Copiar imagens",
+      "enabled": true,
+      "source_dir": "/home/diogo/Downloads/NEWS",
+      "filter": "*ca*.{jpg,jpeg,png,pdf}",
+      "destination": "/home/diogo/Downloads/NEWS/retino",
+      "action": "copy",
+      "date_source": "modified",
+      "check_mode": {
+        "interval": {
+          "minutes": 15
+        }
+      },
+      "on_conflict": "rename",
+      "priority": 20
+    }
+  ],
+  "settings": {
+    "check_updates_on_start": true,
+    "skipped_version": null,
+    "notifications": true,
+    "start_with_system": false
+  }
+}

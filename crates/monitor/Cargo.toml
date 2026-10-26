@@ -1,0 +1,25 @@
+[package]
+name = "monitor"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+default = ["cli"]
+cli = ["dep:anyhow", "dep:tracing-subscriber"]
+
+[dependencies]
+anyhow = { version = "1.0.104", optional = true }
+motor = { path = "../motor" }
+notify = "8.2.1"
+notify-debouncer-full = "0.7.0"
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "time", "sync", "macros", "signal"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", optional = true, features = ["fmt"] }
+
+[dev-dependencies]
+tempfile = "3.27.0"
+
+[[bin]]
+name = "olhorganizer-cli"
+path = "src/bin/olhorganizer-cli.rs"
+required-features = ["cli"]

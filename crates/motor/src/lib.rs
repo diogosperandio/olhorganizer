@@ -1,14 +1,16 @@
-pub fn add(left: u64, right: u64) -> u64 {
-    left + right
-}
+mod config;
+mod destination;
+mod filter;
+mod markers;
+pub mod ops;
+mod plan;
+mod rule;
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
-    }
-}
+pub use config::{Config, MotorError, Settings};
+pub use destination::build_destination;
+pub use filter::{compile, list_filter_templates, Captures, Filter, FilterTemplate};
+pub use markers::{list_markers, MarkerDef, MarkerKind};
+pub use ops::{pick_rule, process, process_with_fs, FileSystem, Outcome, StdFileSystem};
+pub use plan::{test_rule, test_rule_with_fs};
+pub use rule::{Action, CheckMode, ConflictPolicy, DateSource, Rule};
+pub use uuid::Uuid;

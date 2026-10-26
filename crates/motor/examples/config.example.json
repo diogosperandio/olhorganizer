@@ -1,0 +1,37 @@
+{
+  "version": 1,
+  "rules": [
+    {
+      "id": "6f1c2a3e-8b4d-4e5f-9a10-2b3c4d5e6f70",
+      "name": "Jornais",
+      "enabled": true,
+      "source_dir": "/home/diogo/Downloads/NEWS",
+      "filter": "{YYYY}{MM}{DD}.pdf",
+      "destination": "/home/diogo/Downloads/Non2/{YYYY}/{MM}",
+      "action": "move",
+      "date_source": "file_name",
+      "check_mode": { "mode": "instant" },
+      "on_conflict": "rename",
+      "priority": 1
+    },
+    {
+      "id": "0d9e8f7a-6b5c-4d3e-8f21-a0b1c2d3e4f5",
+      "name": "Fotos",
+      "enabled": true,
+      "source_dir": "/home/diogo/Downloads/NEWS",
+      "filter": "*ca*.{jpg,png,heic,pdf}",
+      "destination": "/home/diogo/Downloads/blau/{MM}",
+      "action": "copy",
+      "date_source": "modified",
+      "check_mode": { "mode": "interval", "minutes": 10 },
+      "on_conflict": "skip",
+      "priority": 2
+    }
+  ],
+  "settings": {
+    "check_updates_on_start": true,
+    "skipped_version": null,
+    "notifications": true,
+    "start_with_system": false
+  }
+}

@@ -12,15 +12,13 @@ Use **apenas a seção da sua distribuição**.
 
 ```bash
 sudo apt update
-sudo apt install libwebkit2gtk-4.1-dev build-essential curl wget file \
-  libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev git
+sudo apt install libwebkit2gtk-4.1-dev build-essential curl wget file  libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev git
 ```
 
 ### Fedora
 
 ```bash
-sudo dnf install webkit2gtk4.1-devel openssl-devel curl wget file \
-  libappindicator-gtk3-devel librsvg2-devel libxdo-devel git
+sudo dnf install webkit2gtk4.1-devel openssl-devel curl wget file  libappindicator-gtk3-devel librsvg2-devel libxdo-devel git
 sudo dnf group install "c-development"
 ```
 

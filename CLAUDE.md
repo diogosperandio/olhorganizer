@@ -24,8 +24,16 @@ Cargo workspace (root `Cargo.toml`; build output and `[profile.release]` live at
   check, startup/interval/10-min rescans, pause/resume when disks disappear.
   Emits `MonitorEvent`. Binary `olhorganizer-cli` (feature `cli`, on by default;
   the Tauri app should depend with `default-features = false`).
-- `src-tauri` — Tauri commands, events, tray, plugins. Calls motor/monitor.
-- `src/` — UI only. The UI never touches files directly; it calls Tauri commands.
+- `src-tauri` — Tauri app. `state.rs` (`AppState`: `Mutex<Config>` + `Monitor`,
+  config at `app_config_dir()/config.json`), `commands.rs` (no file logic: calls
+  motor/monitor; `Result<T, String>` with pt-BR messages), `dto.rs` (camelCase
+  IPC shapes; config.json stays snake_case), `events.rs` (forwards
+  `MonitorEvent`s as "file-processed", "rule-error", "rule-paused",
+  "rule-resumed", "rule-hint"), `history.rs` (last 500 events). Logs go to
+  `app_log_dir()/olhorganizer.<date>.log`, daily, 14 kept (`RUST_LOG` overrides).
+- `src/` — UI only. The UI never touches files directly; it calls Tauri commands
+  through `src/lib/api.ts`. **`src/lib/types.ts` mirrors `dto.rs`/`events.rs`
+  and motor's enums by hand: change both sides together.**
 
 ## Markers
 
@@ -126,7 +134,8 @@ must stay valid, or `cargo test -p motor` fails.
 - [x] 2. Marker registry and filter compiler
 - [x] 3. Destination builder, file operations, dry run (`test_rule`, `pick_rule`)
 - [x] 4. Folder monitor (`crates/monitor`) and CLI
-- [x] 5. Include subfolders per rule (4B: + cycle check, circuit breaker)
+  - [x] 4b. Include subfolders per rule, rule-cycle check, circuit breaker
+- [x] 5. Tauri wiring: state, commands, events, history, logging (debug page)
 - [ ] 6. (title TBD)
 - [ ] 7. UI: rule editor (adds the "Incluir subpastas" switch)
 - [ ] 8. (title TBD)

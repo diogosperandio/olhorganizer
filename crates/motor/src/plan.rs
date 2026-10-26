@@ -73,7 +73,7 @@ fn collect_files(
 }
 
 /// `path` relative to `dir`, with `/` separators: `2025/fotos/IMG_0001.jpg`.
-fn relative_label(dir: &Path, path: &Path) -> String {
+pub fn relative_label(dir: &Path, path: &Path) -> String {
     let relative = path.strip_prefix(dir).unwrap_or(path);
     relative
         .components()

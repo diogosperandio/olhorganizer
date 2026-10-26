@@ -1,11 +1,12 @@
 //! Rule selection and the "Testar regra" dry run.
 
-use std::path::Path;
+use std::io;
+use std::path::{Path, PathBuf};
 
 use crate::error::MotorError;
 use crate::filter::compile;
 use crate::ops::{FileSystem, Outcome, StdFs, process_with};
-use crate::rule::{Rule, normalize};
+use crate::rule::{Rule, is_ignored_folder};
 
 /// Dry-runs `rule` on every file directly inside `dir` (not subfolders),
 /// sorted by name. `dir` replaces the rule's source folder, so a folder can be
@@ -23,44 +24,79 @@ pub fn test_rule_with(
         source_dir: dir.to_path_buf(),
         ..rule.clone()
     };
-    let entries = fs.list_dir(dir).map_err(|source| MotorError::Io {
-        path: dir.to_path_buf(),
-        source,
+    let mut files = Vec::new();
+    collect_files(fs, dir, rule.include_subfolders, &mut files).map_err(|source| {
+        MotorError::Io {
+            path: dir.to_path_buf(),
+            source,
+        }
     })?;
 
-    let mut results: Vec<(String, Outcome)> = entries
+    let mut results: Vec<(String, Outcome)> = files
         .iter()
-        .filter(|path| fs.metadata(path).is_ok_and(|m| m.is_file()))
         .map(|path| {
-            let name = path
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_default();
-            (name, process_with(fs, path, &rule, true))
+            (
+                relative_label(dir, path),
+                process_with(fs, path, &rule, true),
+            )
         })
         .collect();
     results.sort_by(|a, b| a.0.cmp(&b.0));
     Ok(results)
 }
 
-/// The first enabled rule, lowest priority value first, whose source folder
-/// directly contains `file` and whose filter matches its name.
+/// Files in `dir`, and below it when `recursive`, without following symlinked
+/// folders or entering hidden and system folders. Unreadable subfolders are
+/// skipped; only an unreadable `dir` is an error.
+fn collect_files(
+    fs: &impl FileSystem,
+    dir: &Path,
+    recursive: bool,
+    out: &mut Vec<PathBuf>,
+) -> io::Result<()> {
+    for path in fs.list_dir(dir)? {
+        let Ok(meta) = fs.symlink_metadata(&path) else {
+            continue;
+        };
+        if meta.is_dir() {
+            let ignored = path
+                .file_name()
+                .is_some_and(|n| is_ignored_folder(&n.to_string_lossy()));
+            if recursive && !ignored {
+                let _ = collect_files(fs, &path, true, out);
+            }
+        } else if fs.metadata(&path).is_ok_and(|m| m.is_file()) {
+            out.push(path);
+        }
+    }
+    Ok(())
+}
+
+/// `path` relative to `dir`, with `/` separators: `2025/fotos/IMG_0001.jpg`.
+fn relative_label(dir: &Path, path: &Path) -> String {
+    let relative = path.strip_prefix(dir).unwrap_or(path);
+    relative
+        .components()
+        .map(|c| c.as_os_str().to_string_lossy())
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+/// The first enabled rule, lowest priority value first, that watches the
+/// folder `file` is in (see [`Rule::watches`]) and whose filter matches its name.
 pub fn pick_rule<'a>(rules: &'a [Rule], file: &Path) -> Option<&'a Rule> {
-    let parent = normalize(file.parent()?);
     let name = file.file_name()?.to_str()?;
 
     let mut candidates: Vec<&Rule> = rules.iter().filter(|r| r.enabled).collect();
     candidates.sort_by_key(|r| r.priority);
-    candidates.into_iter().find(|r| {
-        normalize(&r.source_dir) == parent
-            && compile(&r.filter).is_ok_and(|f| f.matches(name).is_some())
-    })
+    candidates
+        .into_iter()
+        .find(|r| r.watches(file) && compile(&r.filter).is_ok_and(|f| f.matches(name).is_some()))
 }
 
 #[cfg(test)]
 mod tests {
     use std::fs;
-    use std::path::PathBuf;
 
     use super::*;
     use crate::rule::{Action, CheckMode, ConflictPolicy, DateSource};
@@ -72,6 +108,7 @@ mod tests {
             name: name.into(),
             enabled,
             source_dir: source.to_path_buf(),
+            include_subfolders: false,
             filter: filter.into(),
             destination: format!(
                 "{}/{{YYYY}}/{{MM}}",
@@ -105,6 +142,57 @@ mod tests {
         assert_eq!(pick("/home/u/Outros/a.png"), None);
         assert_eq!(pick("/home/u/NEWS/sub/20261022.pdf"), None);
         assert_eq!(pick("/home/u/NEWS/a.pdf.part"), None);
+    }
+
+    #[test]
+    fn pick_rule_with_subfolders() {
+        let news = PathBuf::from("/home/u/NEWS");
+        let mut tree = rule("árvore", &news, "*.pdf", 1, true);
+        tree.include_subfolders = true;
+        let rules = [rule("topo", &news, "*.pdf", 0, true), tree];
+        let pick = |file: &str| pick_rule(&rules, Path::new(file)).map(|r| r.name.as_str());
+
+        assert_eq!(pick("/home/u/NEWS/a.pdf"), Some("topo"));
+        assert_eq!(pick("/home/u/NEWS/sub/a.pdf"), Some("árvore"));
+        assert_eq!(pick("/home/u/NEWS/a/b/c.pdf"), Some("árvore"));
+        assert_eq!(pick("/home/u/NEWS/.cache/a.pdf"), None);
+    }
+
+    #[test]
+    fn test_rule_lists_subfolders_when_enabled() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("NEWS");
+        for (folder, name) in [
+            ("", "20261022.pdf"),
+            ("2025/fotos", "20251130.pdf"),
+            (".oculta", "20261023.pdf"),
+            ("$RECYCLE.BIN", "20261024.pdf"),
+        ] {
+            fs::create_dir_all(src.join(folder)).unwrap();
+            fs::write(src.join(folder).join(name), "x").unwrap();
+        }
+        let before = snapshot(dir.path());
+
+        let mut r = rule("Jornais", &src, "{YYYY}{MM}{DD}.pdf", 0, true);
+        let labels = |r: &Rule| -> Vec<String> {
+            test_rule(r, &src)
+                .unwrap()
+                .into_iter()
+                .map(|(label, _)| label)
+                .collect()
+        };
+        assert_eq!(labels(&r), ["20261022.pdf"]);
+        r.include_subfolders = true;
+        assert_eq!(labels(&r), ["2025/fotos/20251130.pdf", "20261022.pdf"]);
+
+        let results = test_rule(&r, &src).unwrap();
+        assert_eq!(
+            results[0].1,
+            Outcome::WouldMove {
+                to: dir.path().join("Jornais/2025/11/20251130.pdf")
+            }
+        );
+        assert_eq!(snapshot(dir.path()), before);
     }
 
     #[test]

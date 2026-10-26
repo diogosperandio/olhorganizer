@@ -233,6 +233,7 @@ mod tests {
             name: "Teste".into(),
             enabled: true,
             source_dir: PathBuf::from(abs("origem")),
+            include_subfolders: false,
             filter: "*".into(),
             destination: destination.into(),
             action: Action::Move,

@@ -4,17 +4,35 @@ use std::fs;
 use std::io;
 use std::path::{Component, Path, PathBuf};
 
-use motor::{Rule, is_temporary};
+use motor::{Rule, is_ignored_folder, is_temporary};
+use walkdir::WalkDir;
 
-/// Regular files directly inside `dir`, minus temporary download names.
-pub fn list_files(dir: &Path) -> io::Result<Vec<PathBuf>> {
+/// Regular files directly inside `dir` or, when `recursive`, anywhere below
+/// it, minus temporary download names. Symlinks are not followed, and hidden
+/// and system folders are not entered. Only an unreadable `dir` is an error;
+/// unreadable subfolders are skipped.
+pub fn list_files(dir: &Path, recursive: bool) -> io::Result<Vec<PathBuf>> {
+    let walker = WalkDir::new(dir)
+        .follow_links(false)
+        .min_depth(1)
+        .max_depth(if recursive { usize::MAX } else { 1 })
+        .into_iter()
+        .filter_entry(|e| {
+            !(e.depth() > 0
+                && e.file_type().is_dir()
+                && is_ignored_folder(&e.file_name().to_string_lossy()))
+        });
+
     let mut files = Vec::new();
-    for entry in fs::read_dir(dir)? {
-        let entry = entry?;
-        let is_file = entry.file_type().is_ok_and(|t| t.is_file());
-        let temporary = is_temporary(&entry.file_name().to_string_lossy());
-        if is_file && !temporary {
-            files.push(entry.path());
+    for entry in walker {
+        match entry {
+            Ok(e) => {
+                if e.file_type().is_file() && !is_temporary(&e.file_name().to_string_lossy()) {
+                    files.push(e.into_path());
+                }
+            }
+            Err(e) if e.depth() == 0 => return Err(e.into()),
+            Err(e) => tracing::warn!(error = %e, "subfolder skipped"),
         }
     }
     files.sort();
@@ -197,12 +215,56 @@ mod tests {
         for name in ["b.pdf", "a.pdf", "c.pdf.part", "~$d.docx"] {
             fs::write(dir.path().join(name), "x").unwrap();
         }
-        let names: Vec<_> = list_files(dir.path())
+        let names: Vec<_> = list_files(dir.path(), false)
             .unwrap()
             .into_iter()
             .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
             .collect();
         assert_eq!(names, ["a.pdf", "b.pdf"]);
+    }
+
+    #[test]
+    fn recursive_listing_skips_hidden_and_system_folders() {
+        let dir = tempfile::tempdir().unwrap();
+        for (folder, name) in [
+            ("", "a.pdf"),
+            ("2025/fotos", "b.jpg"),
+            ("2025/fotos", "c.jpg.part"),
+            (".oculta", "d.pdf"),
+            ("x/.git", "e.pdf"),
+            ("$RECYCLE.BIN", "f.pdf"),
+            ("System Volume Information", "g.pdf"),
+        ] {
+            fs::create_dir_all(dir.path().join(folder)).unwrap();
+            fs::write(dir.path().join(folder).join(name), "x").unwrap();
+        }
+        let relative: Vec<_> = list_files(dir.path(), true)
+            .unwrap()
+            .into_iter()
+            .map(|p| p.strip_prefix(dir.path()).unwrap().to_path_buf())
+            .collect();
+        assert_eq!(
+            relative,
+            [PathBuf::from("2025/fotos/b.jpg"), PathBuf::from("a.pdf")]
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn recursive_listing_does_not_follow_symlinks() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        fs::write(outside.path().join("fora.pdf"), "x").unwrap();
+        std::os::unix::fs::symlink(outside.path(), dir.path().join("atalho")).unwrap();
+        std::os::unix::fs::symlink(outside.path().join("fora.pdf"), dir.path().join("link.pdf"))
+            .unwrap();
+        assert_eq!(list_files(dir.path(), true).unwrap(), Vec::<PathBuf>::new());
+    }
+
+    #[test]
+    fn missing_folder_is_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(list_files(&dir.path().join("não existe"), true).is_err());
     }
 
     #[cfg(target_os = "linux")]

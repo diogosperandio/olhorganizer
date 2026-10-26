@@ -26,6 +26,20 @@
       "check_mode": { "mode": "interval", "minutes": 10 },
       "on_conflict": "skip",
       "priority": 2
+    },
+    {
+      "id": "3b7e9c41-5d2a-4f86-b0e3-9c1d7a4e2f58",
+      "name": "Digitalizados",
+      "enabled": true,
+      "source_dir": "/home/diogo/Downloads/Digitalizados",
+      "include_subfolders": true,
+      "filter": "{YYYY}{MM}{DD}*.pdf",
+      "destination": "/home/diogo/Documentos/Digitalizados/{YYYY}/{MES}",
+      "action": "move",
+      "date_source": "file_name",
+      "check_mode": { "mode": "instant" },
+      "on_conflict": "rename",
+      "priority": 3
     }
   ],
   "settings": {

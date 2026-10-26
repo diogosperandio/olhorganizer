@@ -52,6 +52,7 @@ fn rule(env: &Env, check_mode: CheckMode) -> Rule {
         name: "Jornais".into(),
         enabled: true,
         source_dir: env.src.clone(),
+        include_subfolders: false,
         filter: "{YYYY}{MM}{DD}.pdf".into(),
         destination: format!("{}/{{YYYY}}/{{MM}}", env.dst.display()),
         action: Action::Move,
@@ -231,5 +232,138 @@ fn describes_events_in_portuguese() {
     assert_eq!(
         event.describe_pt(),
         "20261022.pdf movido para /home/ana/Jornais/2026/10"
+    );
+}
+
+fn subfolder_rule(env: &Env) -> Rule {
+    Rule {
+        include_subfolders: true,
+        ..rule(env, CheckMode::Instant)
+    }
+}
+
+/// Asserts that nothing is processed for a while.
+async fn assert_quiet(rx: &mut UnboundedReceiver<MonitorEvent>) {
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    while let Ok(event) = rx.try_recv() {
+        assert!(
+            !matches!(event, MonitorEvent::FileProcessed { .. }),
+            "unexpected {event:?}"
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn top_level_rule_ignores_subfolders() {
+    let env = env();
+    fs::create_dir_all(env.src.join("sub")).unwrap();
+    fs::write(env.src.join("sub/20261021.pdf"), "na subpasta").unwrap();
+    let (_monitor, mut rx) = start(rule(&env, CheckMode::Instant));
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    fs::write(env.src.join("sub/20261023.pdf"), "na subpasta").unwrap();
+    fs::write(env.src.join("20261022.pdf"), "no topo").unwrap();
+
+    assert_eq!(next_outcome(&mut rx).await, moved_to(&env, "20261022.pdf"));
+    assert_quiet(&mut rx).await;
+    assert!(env.src.join("sub/20261021.pdf").exists());
+    assert!(env.src.join("sub/20261023.pdf").exists());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn destination_inside_source_is_not_processed_again() {
+    let env = env();
+    let mut r = rule(&env, CheckMode::Instant);
+    r.destination = format!("{}/{{YYYY}}/{{MM}}", env.src.display());
+    let (_monitor, mut rx) = start(r);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    fs::write(env.src.join("20261022.pdf"), "jornal").unwrap();
+    let to = env.src.join("2026/10/20261022.pdf");
+    assert_eq!(
+        next_outcome(&mut rx).await,
+        Outcome::Moved { to: to.clone() }
+    );
+    assert_quiet(&mut rx).await;
+    assert_eq!(fs::read_to_string(&to).unwrap(), "jornal");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn subfolder_rule_moves_deep_files_and_keeps_folders() {
+    let env = env();
+    let (_monitor, mut rx) = start(subfolder_rule(&env));
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    let deep = env.src.join("a/b");
+    fs::create_dir_all(&deep).unwrap();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    fs::write(deep.join("20261022.pdf"), "fundo").unwrap();
+
+    assert_eq!(next_outcome(&mut rx).await, moved_to(&env, "20261022.pdf"));
+    assert_eq!(
+        fs::read_to_string(env.dst.join("2026/10/20261022.pdf")).unwrap(),
+        "fundo"
+    );
+    // Folders emptied by moving files out are never deleted.
+    assert!(deep.is_dir());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn folder_moved_into_source_is_scanned() {
+    let env = env();
+    let outside = env.src.with_file_name("lote");
+    fs::create_dir_all(outside.join("dentro")).unwrap();
+    for name in ["20261001.pdf", "20261002.pdf"] {
+        fs::write(outside.join(name), "x").unwrap();
+    }
+    fs::write(outside.join("dentro/20261003.pdf"), "x").unwrap();
+
+    let (_monitor, mut rx) = start(subfolder_rule(&env));
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    fs::rename(&outside, env.src.join("lote")).unwrap();
+
+    let mut moved = Vec::new();
+    for _ in 0..3 {
+        match next_outcome(&mut rx).await {
+            Outcome::Moved { to } => moved.push(to.file_name().unwrap().to_owned()),
+            other => panic!("{other:?}"),
+        }
+    }
+    moved.sort();
+    assert_eq!(moved, ["20261001.pdf", "20261002.pdf", "20261003.pdf"]);
+    assert_quiet(&mut rx).await;
+    assert!(env.src.join("lote/dentro").is_dir());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn subfolder_rule_startup_scan_skips_hidden_folders() {
+    let env = env();
+    fs::create_dir_all(env.src.join("x/y")).unwrap();
+    fs::create_dir_all(env.src.join(".oculta")).unwrap();
+    fs::write(env.src.join("x/y/20261022.pdf"), "x").unwrap();
+    fs::write(env.src.join(".oculta/20261023.pdf"), "x").unwrap();
+
+    let (_monitor, mut rx) = start(subfolder_rule(&env));
+    assert_eq!(next_outcome(&mut rx).await, moved_to(&env, "20261022.pdf"));
+    assert_quiet(&mut rx).await;
+    assert!(env.src.join(".oculta/20261023.pdf").exists());
+}
+
+#[test]
+fn describes_subfolder_files_relative_to_the_source() {
+    let event = MonitorEvent::FileProcessed {
+        rule_id: Uuid::nil(),
+        file: PathBuf::from("/home/ana/Fotos/2025/fotos/IMG_0001.jpg"),
+        outcome: Outcome::Copied {
+            to: PathBuf::from("/media/ana/HD/2025/IMG_0001.jpg"),
+        },
+    };
+    assert_eq!(
+        event.describe_pt_from(Path::new("/home/ana/Fotos")),
+        "2025/fotos/IMG_0001.jpg copiado para /media/ana/HD/2025"
+    );
+    assert_eq!(
+        event.describe_pt(),
+        "IMG_0001.jpg copiado para /media/ana/HD/2025"
     );
 }

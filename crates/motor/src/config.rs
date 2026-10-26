@@ -6,9 +6,20 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 use crate::error::MotorError;
-use crate::rule::Rule;
+use crate::rule::{Action, Rule};
+
+/// A rule combination that works but is probably a mistake.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuleWarning {
+    /// The rule whose destination is the problem.
+    pub rule_id: Uuid,
+    /// The rule that would pick its files up again.
+    pub other_rule_id: Uuid,
+    pub message_pt: String,
+}
 
 /// Current version of the config file format.
 pub const CONFIG_VERSION: u32 = 1;
@@ -98,6 +109,38 @@ impl Config {
     }
 
     /// Enabled rules, lowest priority value first. Ties keep their file order.
+    /// Warns when a rule's destination lies in the area another enabled rule
+    /// watches (its folder, or its whole tree with subfolders), so files would
+    /// be processed twice. A rule overlapping itself is an error reported by
+    /// [`Rule::validate`] instead.
+    pub fn validate_all(&self) -> Vec<RuleWarning> {
+        let enabled: Vec<&Rule> = self.rules.iter().filter(|r| r.enabled).collect();
+        let mut warnings = Vec::new();
+        for rule in &enabled {
+            if !rule.destination_prefix().is_absolute() {
+                continue;
+            }
+            for other in &enabled {
+                if other.id == rule.id || !rule.destination_reaches(other) {
+                    continue;
+                }
+                let verb = match rule.action {
+                    Action::Move => "movidos",
+                    Action::Copy => "copiados",
+                };
+                warnings.push(RuleWarning {
+                    rule_id: rule.id,
+                    other_rule_id: other.id,
+                    message_pt: format!(
+                        "Os arquivos {verb} pela regra '{}' serão processados de novo pela regra '{}'.",
+                        rule.name, other.name
+                    ),
+                });
+            }
+        }
+        warnings
+    }
+
     pub fn rules_by_priority(&self) -> Vec<&Rule> {
         let mut rules: Vec<&Rule> = self.rules.iter().filter(|r| r.enabled).collect();
         rules.sort_by_key(|r| r.priority);
@@ -128,8 +171,7 @@ fn io_error(path: &Path, source: io::Error) -> MotorError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::rule::{Action, CheckMode, ConflictPolicy, DateSource};
-    use uuid::Uuid;
+    use crate::rule::{CheckMode, ConflictPolicy, DateSource};
 
     fn rule(name: &str, priority: u32, enabled: bool) -> Rule {
         Rule {
@@ -137,6 +179,7 @@ mod tests {
             name: name.into(),
             enabled,
             source_dir: PathBuf::from("/home/u/NEWS"),
+            include_subfolders: false,
             filter: "*.pdf".into(),
             destination: "/home/u/Jornais/{YYYY}/{MM}".into(),
             action: Action::Move,
@@ -221,6 +264,91 @@ mod tests {
     }
 
     #[test]
+    fn rule_without_include_subfolders_loads_with_it_off() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        let old = r#"{
+            "version": 1,
+            "rules": [{
+                "id": "6f1c2a3e-8b4d-4e5f-9a10-2b3c4d5e6f70",
+                "name": "Jornais",
+                "enabled": true,
+                "source_dir": "/home/u/NEWS",
+                "filter": "{YYYY}{MM}{DD}.pdf",
+                "destination": "/home/u/Jornais/{YYYY}/{MM}",
+                "action": "move",
+                "date_source": "file_name",
+                "check_mode": { "mode": "instant" },
+                "on_conflict": "rename",
+                "priority": 1
+            }]
+        }"#;
+        fs::write(&path, old).unwrap();
+        let config = Config::load(&path).unwrap();
+        assert!(!config.rules[0].include_subfolders);
+    }
+
+    #[test]
+    fn warns_when_a_destination_feeds_another_rule() {
+        // Paths need not exist: the check is textual.
+        let rule_at = |name: &str, source: &str, destination: &str, subfolders: bool| Rule {
+            source_dir: PathBuf::from(source),
+            destination: destination.into(),
+            include_subfolders: subfolders,
+            ..rule(name, 0, true)
+        };
+        let a = rule_at("A", "/home/u/NEWS", "/home/u/Arquivo/{YYYY}", false);
+        let b_tree = rule_at("B", "/home/u/Arquivo", "/home/u/Fora", true);
+        let b_top = rule_at("B", "/home/u/Arquivo", "/home/u/Fora", false);
+
+        let config = Config {
+            rules: vec![a.clone(), b_tree.clone()],
+            ..Config::default()
+        };
+        let warnings = config.validate_all();
+        assert_eq!(warnings.len(), 1);
+        assert_eq!(
+            (warnings[0].rule_id, warnings[0].other_rule_id),
+            (a.id, b_tree.id)
+        );
+        assert_eq!(
+            warnings[0].message_pt,
+            "Os arquivos movidos pela regra 'A' serão processados de novo pela regra 'B'."
+        );
+
+        // B watches only its top level; A's files go into a year subfolder.
+        let config = Config {
+            rules: vec![a.clone(), b_top.clone()],
+            ..Config::default()
+        };
+        assert!(config.validate_all().is_empty());
+
+        // ...unless A drops them straight into B's folder.
+        let a_flat = Rule {
+            destination: "/home/u/Arquivo".into(),
+            ..a.clone()
+        };
+        let config = Config {
+            rules: vec![a_flat, b_top],
+            ..Config::default()
+        };
+        assert_eq!(config.validate_all().len(), 1);
+
+        // Disabled rules do not count.
+        let config = Config {
+            rules: vec![
+                a,
+                Rule {
+                    enabled: false,
+                    ..b_tree
+                },
+            ],
+            ..Config::default()
+        };
+        assert!(config.validate_all().is_empty());
+    }
+
+    #[test]
     fn rules_by_priority_sorts_enabled_rules() {
         let config = Config {
             rules: vec![
@@ -244,7 +372,9 @@ mod tests {
     fn example_config_loads() {
         let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/config.example.json");
         let config = Config::load(&path).unwrap();
-        assert_eq!(config.rules.len(), 2);
+        assert_eq!(config.rules.len(), 3);
+        assert!(config.rules.iter().any(|r| r.include_subfolders));
+        assert_eq!(config.validate_all(), []);
         if cfg!(unix) {
             for rule in &config.rules {
                 assert!(

@@ -12,7 +12,7 @@ mod rule;
 #[cfg(test)]
 mod testutil;
 
-pub use config::{CONFIG_VERSION, Config, Settings};
+pub use config::{CONFIG_VERSION, Config, RuleWarning, Settings};
 pub use destination::{DestinationError, FileMeta, build_destination};
 pub use error::MotorError;
 pub use filter::{
@@ -25,4 +25,6 @@ pub use ops::{FileSystem, Outcome, StdFs, process};
 pub use plan::{pick_rule, test_rule};
 pub use uuid::Uuid;
 
-pub use rule::{Action, CheckMode, ConflictPolicy, DateSource, Rule, RuleProblem};
+pub use rule::{
+    Action, CheckMode, ConflictPolicy, DateSource, Rule, RuleProblem, is_ignored_folder,
+};

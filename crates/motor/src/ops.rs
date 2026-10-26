@@ -10,7 +10,7 @@ use serde::Serialize;
 
 use crate::destination::{FileMeta, build_destination};
 use crate::filter::compile;
-use crate::rule::{Action, ConflictPolicy, Rule};
+use crate::rule::{Action, ConflictPolicy, Rule, resolve_with};
 
 /// Most "name (n).ext" candidates tried before giving up.
 const MAX_RENAME: u32 = 9999;
@@ -36,6 +36,8 @@ pub enum Outcome {
 pub trait FileSystem {
     /// Metadata, following symlinks.
     fn metadata(&self, path: &Path) -> io::Result<Metadata>;
+    /// Metadata of the link itself for symlinks.
+    fn symlink_metadata(&self, path: &Path) -> io::Result<Metadata>;
     fn canonicalize(&self, path: &Path) -> io::Result<PathBuf>;
     /// True if anything (even a broken symlink) exists at `path`.
     fn exists(&self, path: &Path) -> bool;
@@ -54,6 +56,10 @@ pub struct StdFs;
 impl FileSystem for StdFs {
     fn metadata(&self, path: &Path) -> io::Result<Metadata> {
         fs::metadata(path)
+    }
+
+    fn symlink_metadata(&self, path: &Path) -> io::Result<Metadata> {
+        fs::symlink_metadata(path)
     }
 
     fn canonicalize(&self, path: &Path) -> io::Result<PathBuf> {
@@ -141,6 +147,7 @@ fn run(fs: &impl FileSystem, file: &Path, rule: &Rule, dry_run: bool) -> Result<
     let dir = build_destination(rule, &captures, &file_meta).map_err(|e| Outcome::Failed {
         error: e.to_string(),
     })?;
+    guard_against_loops(fs, file, &dir, rule)?;
     let target = resolve_target(fs, &dir, &captures.name, &captures.ext, rule.on_conflict)?;
 
     if dry_run {
@@ -177,6 +184,33 @@ fn run(fs: &impl FileSystem, file: &Path, rule: &Rule, dry_run: bool) -> Result<
             Err(e) => Err(failed("Não foi possível mover o arquivo", e)),
         },
     }
+}
+
+/// Defense in depth against processing the same file forever, in case
+/// validation was bypassed or folders changed after it ran: a file already in
+/// its destination folder, or below a destination that lies in the watched
+/// folder, is left alone. Must run before the conflict policy, which would
+/// otherwise rename the file next to itself.
+fn guard_against_loops(
+    fs: &impl FileSystem,
+    file: &Path,
+    dir: &Path,
+    rule: &Rule,
+) -> Result<(), Outcome> {
+    let resolve = |path: &Path| resolve_with(path, |p| fs.canonicalize(p));
+    let here = resolve(file.parent().unwrap_or(Path::new("")));
+    let there = resolve(dir);
+    if here == there {
+        return Err(skipped("O arquivo já está na pasta de destino."));
+    }
+    // Only when the destination is inside the source: a destination above the
+    // source ("move up one folder") also contains the file, legitimately.
+    if here.starts_with(&there) && there.starts_with(&resolve(&rule.source_dir)) {
+        return Err(skipped(
+            "O arquivo já está dentro da pasta de destino e não será processado de novo.",
+        ));
+    }
+    Ok(())
 }
 
 /// Picks the final path in `dir` according to the conflict policy.
@@ -309,6 +343,7 @@ mod tests {
             name: "Jornais".into(),
             enabled: true,
             source_dir: env.src.clone(),
+            include_subfolders: false,
             filter: "{YYYY}{MM}{DD}.pdf".into(),
             destination: format!("{}/{{YYYY}}/{{MM}}", env.dst.display()),
             action,
@@ -344,6 +379,54 @@ mod tests {
         assert_eq!(outcome, Outcome::Moved { to: to.clone() });
         assert_eq!(read(&to), "jornal");
         assert!(!file.exists());
+    }
+
+    #[test]
+    fn moves_into_a_subfolder_of_the_source() {
+        let env = env();
+        let file = put(&env.src, "20261022.pdf", "jornal");
+        let mut r = rule(&env, Action::Move, ConflictPolicy::Rename);
+        r.destination = format!("{}/{{YYYY}}/{{MM}}", env.src.display());
+        let to = env.src.join("2026/10/20261022.pdf");
+        assert_eq!(process(&file, &r, false), Outcome::Moved { to: to.clone() });
+
+        // Processing the moved file again changes nothing, and no "(2)" copy appears.
+        let before = snapshot(&env.root);
+        let outcome = process(&to, &r, false);
+        assert!(
+            matches!(&outcome, Outcome::Skipped { reason } if reason.contains("já está na pasta de destino")),
+            "{outcome:?}"
+        );
+        assert_eq!(snapshot(&env.root), before);
+    }
+
+    #[test]
+    fn file_below_a_destination_inside_the_source_is_skipped() {
+        let env = env();
+        let file = put(&env.src.join("2026/outra"), "20261022.pdf", "jornal");
+        let mut r = rule(&env, Action::Move, ConflictPolicy::Rename);
+        r.destination = format!("{}/{{YYYY}}", env.src.display());
+        let before = snapshot(&env.root);
+        let outcome = process(&file, &r, false);
+        assert!(
+            matches!(&outcome, Outcome::Skipped { reason } if reason.contains("dentro da pasta de destino")),
+            "{outcome:?}"
+        );
+        assert_eq!(snapshot(&env.root), before);
+    }
+
+    #[test]
+    fn destination_above_the_source_still_works() {
+        let env = env();
+        let file = put(&env.src, "20261022.pdf", "jornal");
+        let mut r = rule(&env, Action::Move, ConflictPolicy::Rename);
+        r.destination = env.root.display().to_string();
+        assert_eq!(
+            process(&file, &r, false),
+            Outcome::Moved {
+                to: env.root.join("20261022.pdf")
+            }
+        );
     }
 
     #[test]
@@ -556,6 +639,9 @@ mod tests {
     impl FileSystem for Faulty {
         fn metadata(&self, path: &Path) -> io::Result<Metadata> {
             StdFs.metadata(path)
+        }
+        fn symlink_metadata(&self, path: &Path) -> io::Result<Metadata> {
+            StdFs.symlink_metadata(path)
         }
         fn canonicalize(&self, path: &Path) -> io::Result<PathBuf> {
             StdFs.canonicalize(path)

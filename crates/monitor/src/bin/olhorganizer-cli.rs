@@ -50,10 +50,10 @@ async fn main() -> anyhow::Result<()> {
         );
     }
     let config = Config::load(&args.config)?;
-    let names: HashMap<_, _> = config
+    let rules: HashMap<_, _> = config
         .rules
         .iter()
-        .map(|r| (r.id, r.name.clone()))
+        .map(|r| (r.id, (r.name.clone(), r.source_dir.clone())))
         .collect();
 
     let (tx, mut rx) = mpsc::unbounded_channel();
@@ -70,12 +70,17 @@ async fn main() -> anyhow::Result<()> {
         ""
     };
     println!("Monitorando {enabled} regra(s){mode}. Pressione Ctrl+C para sair.");
+    for warning in config.validate_all() {
+        println!("Aviso: {}", warning.message_pt);
+    }
 
     loop {
         tokio::select! {
             Some(event) = rx.recv() => {
-                let rule = names.get(&event.rule_id()).map_or("?", String::as_str);
-                println!("[{rule}] {}", event.describe_pt());
+                match rules.get(&event.rule_id()) {
+                    Some((name, source)) => println!("[{name}] {}", event.describe_pt_from(source)),
+                    None => println!("{}", event.describe_pt()),
+                }
             }
             result = tokio::signal::ctrl_c() => {
                 result.context("Não foi possível escutar o Ctrl+C")?;

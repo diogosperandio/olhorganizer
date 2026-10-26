@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use uuid::Uuid;
 
+use crate::rule::{destination_fixed_prefix, path_is_same_or_inside, paths_equal};
 use crate::Rule;
 
 const CURRENT_CONFIG_VERSION: u32 = 1;
@@ -106,6 +107,34 @@ impl Config {
         let mut rules: Vec<_> = self.rules.iter().filter(|rule| rule.enabled).collect();
         rules.sort_by_key(|rule| rule.priority);
         rules
+    }
+
+    pub fn validate_all(&self) -> Vec<String> {
+        let enabled: Vec<_> = self.rules.iter().filter(|rule| rule.enabled).collect();
+        let mut warnings = Vec::new();
+
+        for producing_rule in &enabled {
+            let destination = destination_fixed_prefix(&producing_rule.destination);
+            for watching_rule in &enabled {
+                if producing_rule.id == watching_rule.id {
+                    continue;
+                }
+                let watched = if watching_rule.include_subfolders {
+                    path_is_same_or_inside(&destination, &watching_rule.source_dir)
+                } else {
+                    !producing_rule.destination.contains('{')
+                        && paths_equal(&destination, &watching_rule.source_dir)
+                };
+                if watched {
+                    warnings.push(format!(
+                        "Os arquivos movidos pela regra '{}' serão processados de novo pela regra '{}'.",
+                        producing_rule.name, watching_rule.name
+                    ));
+                }
+            }
+        }
+
+        warnings
     }
 }
 
@@ -221,6 +250,7 @@ mod tests {
             action: Action::Move,
             date_source: DateSource::FileName,
             check_mode: CheckMode::Instant,
+            include_subfolders: false,
             on_conflict: ConflictPolicy::Rename,
             priority,
         }
@@ -293,7 +323,7 @@ mod tests {
         let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/config.example.json");
         let config = Config::load(path).expect("example config should load");
 
-        assert_eq!(config.rules.len(), 2);
+        assert_eq!(config.rules.len(), 3);
     }
 
     #[test]
@@ -311,5 +341,55 @@ mod tests {
         assert_eq!(captures.day.as_deref(), Some("22"));
         assert!(filter.matches("canela.pdf").is_none());
         assert!(filter.matches("bIaubi.pdf").is_none());
+    }
+
+    #[test]
+    fn old_config_defaults_include_subfolders_to_false() {
+        let json = r#"{
+            "version": 1,
+            "rules": [{
+                "id": "bbf2fcf0-7bcf-4d9a-b1f8-bccf3f720199",
+                "name": "Antiga",
+                "enabled": true,
+                "source_dir": "/entrada",
+                "filter": "*.pdf",
+                "destination": "/saida",
+                "action": "move",
+                "date_source": "modified",
+                "check_mode": "instant",
+                "on_conflict": "rename",
+                "priority": 1
+            }],
+            "settings": {
+                "check_updates_on_start": true,
+                "skipped_version": null,
+                "notifications": true,
+                "start_with_system": false
+            }
+        }"#;
+
+        let config: Config = serde_json::from_str(json).expect("old config should load");
+
+        assert!(!config.rules[0].include_subfolders);
+    }
+
+    #[test]
+    fn warns_when_a_destination_is_watched_by_another_rule() {
+        let mut producing = rule("A", 1, true);
+        producing.source_dir = PathBuf::from("/origem");
+        producing.destination = "/monitorada/organizados/{YYYY}".to_owned();
+        let mut watching = rule("B", 2, true);
+        watching.source_dir = PathBuf::from("/monitorada");
+        watching.include_subfolders = true;
+        watching.destination = "/outra-saida".to_owned();
+        let config = Config {
+            rules: vec![producing, watching],
+            ..Config::default()
+        };
+
+        assert_eq!(
+            config.validate_all(),
+            ["Os arquivos movidos pela regra 'A' serão processados de novo pela regra 'B'."]
+        );
     }
 }

@@ -2,6 +2,7 @@ use std::fs::{self, Metadata};
 use std::io;
 use std::path::{Path, PathBuf};
 
+use crate::rule::{normalize_path, path_is_same_or_inside, paths_equal};
 use crate::{build_destination, compile, Action, ConflictPolicy, Rule};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -131,6 +132,32 @@ pub fn process_with_fs<F: FileSystem + ?Sized>(
             };
         }
     };
+    let Some(current_folder) = file.parent() else {
+        return Outcome::Failed {
+            error: "O arquivo de origem não possui uma pasta válida.".to_owned(),
+        };
+    };
+    let Some(destination_folder) = destination.parent() else {
+        return Outcome::Failed {
+            error: "O caminho de destino não possui uma pasta válida.".to_owned(),
+        };
+    };
+    let current_folder = fs
+        .canonicalize(current_folder)
+        .unwrap_or_else(|_| normalize_path(current_folder));
+    let destination_folder = fs
+        .canonicalize(destination_folder)
+        .unwrap_or_else(|_| normalize_path(destination_folder));
+    if paths_equal(&current_folder, &destination_folder) {
+        return Outcome::Skipped {
+            reason: "O arquivo já está na pasta de destino.".to_owned(),
+        };
+    }
+    if path_is_same_or_inside(&current_folder, &destination_folder) {
+        return Outcome::Skipped {
+            reason: "O arquivo já está dentro da pasta de destino.".to_owned(),
+        };
+    }
     let destination = match destination_for_conflict(fs, destination, rule.on_conflict) {
         Ok(Some(destination)) => destination,
         Ok(None) => {
@@ -178,7 +205,13 @@ pub fn pick_rule(rules: &[Rule], file: impl AsRef<Path>) -> Option<&Rule> {
     candidates.sort_by_key(|rule| rule.priority);
 
     candidates.into_iter().find(|rule| {
-        path_is_inside(file, &rule.source_dir)
+        let inside_scope = if rule.include_subfolders {
+            path_is_same_or_inside(file, &rule.source_dir)
+        } else {
+            file.parent()
+                .is_some_and(|parent| paths_equal(parent, &rule.source_dir))
+        };
+        inside_scope
             && compile(&rule.filter)
                 .ok()
                 .and_then(|filter| filter.matches(file_name))
@@ -427,6 +460,7 @@ mod tests {
             action,
             date_source: DateSource::FileName,
             check_mode: CheckMode::Instant,
+            include_subfolders: false,
             on_conflict: ConflictPolicy::Rename,
             priority: 0,
         }
@@ -455,6 +489,27 @@ mod tests {
             fs::read(destination).expect("destination should exist"),
             b"jornal"
         );
+    }
+
+    #[test]
+    fn skips_file_that_is_already_in_its_destination() {
+        let directory = tempdir().expect("temp directory should be created");
+        let source = directory.path().join("entrada");
+        let destination_folder = source.join("2026/10");
+        fs::create_dir_all(&destination_folder).expect("destination should be created");
+        let file = destination_folder.join("20261022.pdf");
+        fs::write(&file, b"jornal").expect("fixture should be written");
+        let configured_rule = rule(&source, &source, Action::Move);
+
+        let outcome = process(&file, &configured_rule, false);
+
+        assert_eq!(
+            outcome,
+            Outcome::Skipped {
+                reason: "O arquivo já está na pasta de destino.".to_owned()
+            }
+        );
+        assert_eq!(fs::read(file).expect("source should remain"), b"jornal");
     }
 
     #[test]

@@ -19,6 +19,7 @@ fn rule(source: &Path, output: &Path, check_mode: CheckMode) -> Rule {
         action: Action::Move,
         date_source: DateSource::FileName,
         check_mode,
+        include_subfolders: false,
         on_conflict: ConflictPolicy::Rename,
         priority: 0,
     }
@@ -206,6 +207,29 @@ async fn reload_keeps_unchanged_watcher_running_without_restarting_it() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn reload_restarts_rule_when_include_subfolders_changes() {
+    let (_directory, source, output) = setup();
+    let nested = source.join("sub");
+    fs::create_dir(&nested).expect("nested folder should be created");
+    fs::write(nested.join("20261022.pdf"), b"aninhado").expect("fixture should be written");
+    let configured_rule = rule(&source, &output, CheckMode::Instant);
+    let (event_tx, mut event_rx) = mpsc::unbounded_channel();
+    let mut monitor =
+        Monitor::start_with_options(config(configured_rule.clone()), event_tx, test_options());
+    let ignored = tokio::time::timeout(Duration::from_millis(200), event_rx.recv()).await;
+    assert!(ignored.is_err(), "nested file should initially be ignored");
+
+    let mut recursive_rule = configured_rule;
+    recursive_rule.include_subfolders = true;
+    monitor.reload(config(recursive_rule)).await;
+    let (_, outcome) = next_processed(&mut event_rx).await;
+
+    assert!(matches!(outcome, Outcome::Moved { .. }));
+    assert!(output.join("2026/10/20261022.pdf").exists());
+    monitor.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn overlapping_watchers_use_rule_priority() {
     let directory = tempdir().expect("temp directory should be created");
     let source = directory.path().join("entrada");
@@ -271,6 +295,91 @@ async fn unavailable_source_pauses_and_recovers_on_retry() {
     assert_eq!(
         fs::read(output.join("2026/10/20261022.pdf")).expect("recovered rule should move file"),
         b"retomado"
+    );
+    monitor.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn non_recursive_rule_ignores_nested_file_but_moves_top_level_file() {
+    let (_directory, source, output) = setup();
+    let nested = source.join("sub");
+    fs::create_dir(&nested).expect("nested folder should be created");
+    fs::write(nested.join("20261021.pdf"), b"aninhado").expect("nested fixture should be written");
+    fs::write(source.join("20261022.pdf"), b"topo").expect("top fixture should be written");
+    let (event_tx, mut event_rx) = mpsc::unbounded_channel();
+    let mut monitor = Monitor::start_with_options(
+        config(rule(&source, &output, CheckMode::Instant)),
+        event_tx,
+        test_options(),
+    );
+
+    let (_, outcome) = next_processed(&mut event_rx).await;
+
+    assert!(matches!(outcome, Outcome::Moved { .. }));
+    assert!(nested.join("20261021.pdf").exists());
+    assert!(output.join("2026/10/20261022.pdf").exists());
+    let unexpected = tokio::time::timeout(Duration::from_millis(250), event_rx.recv()).await;
+    assert!(
+        unexpected.is_err(),
+        "nested file was unexpectedly processed"
+    );
+    monitor.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn recursive_rule_moves_a_deeply_nested_file() {
+    let (_directory, source, output) = setup();
+    let nested = source.join("a/b");
+    fs::create_dir_all(&nested).expect("nested folders should be created");
+    fs::write(nested.join("20261022.pdf"), b"aninhado").expect("nested fixture should be written");
+    let mut configured_rule = rule(&source, &output, CheckMode::Instant);
+    configured_rule.include_subfolders = true;
+    let (event_tx, mut event_rx) = mpsc::unbounded_channel();
+    let mut monitor =
+        Monitor::start_with_options(config(configured_rule), event_tx, test_options());
+
+    let (file, outcome) = next_processed(&mut event_rx).await;
+
+    assert_eq!(file, nested.join("20261022.pdf"));
+    assert!(matches!(outcome, Outcome::Moved { .. }));
+    assert!(output.join("2026/10/20261022.pdf").exists());
+    assert!(nested.exists(), "empty source folders must remain");
+    monitor.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn recursive_rule_scans_a_folder_moved_into_the_source() {
+    let (directory, source, output) = setup();
+    let staged = directory.path().join("lote");
+    fs::create_dir_all(staged.join("vazia")).expect("staged folders should be created");
+    for (name, contents) in [
+        ("20261021.pdf", b"um".as_slice()),
+        ("20261022.pdf", b"dois".as_slice()),
+        ("20261023.pdf", b"tres".as_slice()),
+    ] {
+        fs::write(staged.join(name), contents).expect("staged file should be written");
+    }
+    let mut configured_rule = rule(&source, &output, CheckMode::Instant);
+    configured_rule.include_subfolders = true;
+    let (event_tx, mut event_rx) = mpsc::unbounded_channel();
+    let mut monitor =
+        Monitor::start_with_options(config(configured_rule), event_tx, test_options());
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let imported = source.join("lote");
+    fs::rename(&staged, &imported).expect("folder should move into source");
+    for _ in 0..3 {
+        let (_, outcome) = next_processed(&mut event_rx).await;
+        assert!(matches!(outcome, Outcome::Moved { .. }));
+    }
+
+    for name in ["20261021.pdf", "20261022.pdf", "20261023.pdf"] {
+        assert!(output.join("2026/10").join(name).exists());
+    }
+    assert!(imported.exists(), "source folder must not be deleted");
+    assert!(
+        imported.join("vazia").exists(),
+        "empty subfolder must remain"
     );
     monitor.stop().await;
 }

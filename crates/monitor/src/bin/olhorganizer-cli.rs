@@ -1,9 +1,10 @@
+use std::collections::HashMap;
 use std::env;
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
 use monitor::{Monitor, MonitorEvent, MonitorOptions};
-use motor::{Config, Outcome};
+use motor::{Config, Outcome, Uuid};
 use tokio::sync::mpsc;
 
 #[tokio::main]
@@ -16,6 +17,11 @@ async fn main() -> Result<()> {
             arguments.config.display()
         )
     })?;
+    let rule_sources: HashMap<_, _> = config
+        .rules
+        .iter()
+        .map(|rule| (rule.id, rule.source_dir.clone()))
+        .collect();
     let (event_tx, mut event_rx) = mpsc::unbounded_channel();
     let options = MonitorOptions {
         dry_run: arguments.dry_run,
@@ -33,7 +39,7 @@ async fn main() -> Result<()> {
                 let Some(event) = event else {
                     break;
                 };
-                println!("{}", format_event(event));
+                println!("{}", format_event(event, &rule_sources));
             }
         }
     }
@@ -74,10 +80,14 @@ fn parse_arguments() -> Result<Arguments> {
     Ok(Arguments { config, dry_run })
 }
 
-fn format_event(event: MonitorEvent) -> String {
+fn format_event(event: MonitorEvent, rule_sources: &HashMap<Uuid, PathBuf>) -> String {
     match event {
-        MonitorEvent::FileProcessed { file, outcome, .. } => {
-            let file_name = display_file_name(&file);
+        MonitorEvent::FileProcessed {
+            rule_id,
+            file,
+            outcome,
+        } => {
+            let file_name = display_file_name(&file, rule_sources.get(&rule_id));
             match outcome {
                 Outcome::Moved { to } => format!(
                     "{file_name} movido para {}",
@@ -110,8 +120,11 @@ fn format_event(event: MonitorEvent) -> String {
     }
 }
 
-fn display_file_name(path: &Path) -> String {
-    path.file_name()
+fn display_file_name(path: &Path, source_dir: Option<&PathBuf>) -> String {
+    source_dir
+        .and_then(|source| path.strip_prefix(source).ok())
+        .filter(|relative| !relative.as_os_str().is_empty())
+        .or_else(|| path.file_name().map(Path::new))
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_else(|| path.display().to_string())
 }
@@ -126,14 +139,39 @@ mod tests {
 
     #[test]
     fn formats_moved_event_in_portuguese() {
-        let line = format_event(MonitorEvent::FileProcessed {
-            rule_id: motor::Uuid::new_v4(),
-            file: PathBuf::from("20261022.pdf"),
-            outcome: Outcome::Moved {
-                to: PathBuf::from("/home/ana/Jornais/2026/10/20261022.pdf"),
+        let rule_id = motor::Uuid::new_v4();
+        let line = format_event(
+            MonitorEvent::FileProcessed {
+                rule_id,
+                file: PathBuf::from("20261022.pdf"),
+                outcome: Outcome::Moved {
+                    to: PathBuf::from("/home/ana/Jornais/2026/10/20261022.pdf"),
+                },
             },
-        });
+            &HashMap::new(),
+        );
 
         assert_eq!(line, "20261022.pdf movido para /home/ana/Jornais/2026/10");
+    }
+
+    #[test]
+    fn formats_nested_file_relative_to_the_rule_source() {
+        let rule_id = motor::Uuid::new_v4();
+        let sources = HashMap::from([(rule_id, PathBuf::from("/home/ana/NEWS"))]);
+        let line = format_event(
+            MonitorEvent::FileProcessed {
+                rule_id,
+                file: PathBuf::from("/home/ana/NEWS/sub/20261022.pdf"),
+                outcome: Outcome::WouldMove {
+                    to: PathBuf::from("/home/ana/Jornais/2026/10/20261022.pdf"),
+                },
+            },
+            &sources,
+        );
+
+        assert_eq!(
+            line,
+            "sub/20261022.pdf seria movido para /home/ana/Jornais/2026/10"
+        );
     }
 }

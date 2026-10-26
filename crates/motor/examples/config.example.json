@@ -30,6 +30,20 @@
       },
       "on_conflict": "rename",
       "priority": 20
+    },
+    {
+      "id": "bbf2fcf0-7bcf-4d9a-b1f8-bccf3f720103",
+      "name": "Organizar entrada recursiva",
+      "enabled": false,
+      "source_dir": "/home/diogo/Downloads/Entrada-recursiva",
+      "filter": "{YYYY}{MM}{DD}.*",
+      "destination": "/home/diogo/Downloads/Arquivos-organizados/{YYYY}/{MM}",
+      "action": "move",
+      "date_source": "file_name",
+      "check_mode": "instant",
+      "include_subfolders": true,
+      "on_conflict": "rename",
+      "priority": 30
     }
   ],
   "settings": {

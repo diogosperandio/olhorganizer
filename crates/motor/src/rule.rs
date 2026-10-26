@@ -1,3 +1,5 @@
+use std::ffi::OsString;
+use std::fs;
 use std::path::{Component, Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -15,6 +17,8 @@ pub struct Rule {
     pub date_source: DateSource,
     pub check_mode: CheckMode,
     #[serde(default)]
+    pub include_subfolders: bool,
+    #[serde(default)]
     pub on_conflict: ConflictPolicy,
     pub priority: u32,
 }
@@ -31,9 +35,20 @@ impl Rule {
 
         if self.destination.trim().is_empty() {
             problems.push("A pasta de destino não pode ficar vazia.".to_owned());
-        } else if destination_is_inside_source(&self.destination, &self.source_dir) {
-            problems
-                .push("A pasta de destino não pode ficar dentro da pasta monitorada.".to_owned());
+        } else {
+            let prefix = destination_fixed_prefix(&self.destination);
+            if self.include_subfolders && path_is_same_or_inside(&prefix, &self.source_dir) {
+                problems.push(
+                    "Com 'Incluir subpastas' ativado, a pasta de destino precisa ficar fora da pasta monitorada."
+                        .to_owned(),
+                );
+            } else if !self.include_subfolders
+                && !self.destination.contains('{')
+                && paths_equal(&prefix, &self.source_dir)
+            {
+                problems
+                    .push("A pasta de destino não pode ser a própria pasta monitorada.".to_owned());
+            }
         }
 
         if matches!(self.check_mode, CheckMode::Interval { minutes: 0 }) {
@@ -75,23 +90,15 @@ pub enum ConflictPolicy {
     Skip,
 }
 
-fn destination_is_inside_source(destination: &str, source: &Path) -> bool {
-    if !source.is_absolute() {
-        return false;
-    }
-
-    let fixed_prefix = destination
-        .split_once('{')
-        .map_or(destination, |(prefix, _)| prefix);
-    let destination_prefix = Path::new(fixed_prefix);
-    if !destination_prefix.is_absolute() {
-        return false;
-    }
-
-    normalize_path(destination_prefix).starts_with(normalize_path(source))
+pub(crate) fn destination_fixed_prefix(destination: &str) -> PathBuf {
+    PathBuf::from(
+        destination
+            .split_once('{')
+            .map_or(destination, |(prefix, _)| prefix),
+    )
 }
 
-fn normalize_path(path: &Path) -> PathBuf {
+pub(crate) fn normalize_path(path: &Path) -> PathBuf {
     let mut normalized = PathBuf::new();
 
     for component in path.components() {
@@ -104,7 +111,74 @@ fn normalize_path(path: &Path) -> PathBuf {
         }
     }
 
-    normalized
+    canonicalize_existing_prefix(normalized)
+}
+
+fn canonicalize_existing_prefix(path: PathBuf) -> PathBuf {
+    let mut existing = path.clone();
+    let mut missing = Vec::<OsString>::new();
+
+    while !existing.as_os_str().is_empty() && !existing.exists() {
+        let Some(name) = existing.file_name().map(ToOwned::to_owned) else {
+            break;
+        };
+        missing.push(name);
+        if !existing.pop() {
+            break;
+        }
+    }
+
+    let Ok(mut canonical) = fs::canonicalize(&existing) else {
+        return path;
+    };
+    for component in missing.into_iter().rev() {
+        canonical.push(component);
+    }
+    canonical
+}
+
+pub(crate) fn paths_equal(left: &Path, right: &Path) -> bool {
+    let left = normalize_path(left);
+    let right = normalize_path(right);
+    components_equal(&left, &right)
+}
+
+pub(crate) fn path_is_same_or_inside(path: &Path, directory: &Path) -> bool {
+    if !path.is_absolute() || !directory.is_absolute() {
+        return false;
+    }
+    let path = normalize_path(path);
+    let directory = normalize_path(directory);
+    let path_components: Vec<_> = path.components().collect();
+    let directory_components: Vec<_> = directory.components().collect();
+    path_components.len() >= directory_components.len()
+        && path_components
+            .iter()
+            .zip(directory_components.iter())
+            .all(|(left, right)| component_equal(left, right))
+}
+
+fn components_equal(left: &Path, right: &Path) -> bool {
+    let left: Vec<_> = left.components().collect();
+    let right: Vec<_> = right.components().collect();
+    left.len() == right.len()
+        && left
+            .iter()
+            .zip(right.iter())
+            .all(|(left, right)| component_equal(left, right))
+}
+
+fn component_equal(left: &Component<'_>, right: &Component<'_>) -> bool {
+    #[cfg(windows)]
+    {
+        left.as_os_str()
+            .to_string_lossy()
+            .eq_ignore_ascii_case(&right.as_os_str().to_string_lossy())
+    }
+    #[cfg(not(windows))]
+    {
+        left == right
+    }
 }
 
 #[cfg(test)]
@@ -122,6 +196,7 @@ mod tests {
             action: Action::Move,
             date_source: DateSource::FileName,
             check_mode: CheckMode::Instant,
+            include_subfolders: false,
             on_conflict: ConflictPolicy::default(),
             priority: 0,
         }
@@ -161,15 +236,57 @@ mod tests {
     }
 
     #[test]
-    fn rejects_destination_inside_source_directory() {
+    fn allows_destination_inside_source_when_subfolders_are_off() {
         let mut rule = valid_rule();
         rule.source_dir = PathBuf::from("/entrada");
         rule.destination = "/entrada/organizados/{YYYY}".to_owned();
 
+        assert!(rule.validate().is_empty());
+    }
+
+    #[test]
+    fn rejects_source_itself_when_subfolders_are_off() {
+        let mut rule = valid_rule();
+        rule.source_dir = PathBuf::from("/entrada");
+        rule.destination = "/entrada".to_owned();
+
         assert_eq!(
             rule.validate(),
-            ["A pasta de destino não pode ficar dentro da pasta monitorada."]
+            ["A pasta de destino não pode ser a própria pasta monitorada."]
         );
+    }
+
+    #[test]
+    fn rejects_destination_inside_source_when_subfolders_are_on() {
+        let mut rule = valid_rule();
+        rule.source_dir = PathBuf::from("/entrada");
+        rule.destination = "/entrada/{YYYY}".to_owned();
+        rule.include_subfolders = true;
+
+        assert_eq!(
+            rule.validate(),
+            ["Com 'Incluir subpastas' ativado, a pasta de destino precisa ficar fora da pasta monitorada."]
+        );
+    }
+
+    #[test]
+    fn allows_destination_outside_source_when_subfolders_are_on() {
+        let mut rule = valid_rule();
+        rule.source_dir = PathBuf::from("/entrada");
+        rule.destination = "/saida/{YYYY}".to_owned();
+        rule.include_subfolders = true;
+
+        assert!(rule.validate().is_empty());
+    }
+
+    #[test]
+    fn normalizes_parent_components_before_comparing_paths() {
+        let mut rule = valid_rule();
+        rule.source_dir = PathBuf::from("/entrada");
+        rule.destination = "/entrada/../saida/{YYYY}".to_owned();
+        rule.include_subfolders = true;
+
+        assert!(rule.validate().is_empty());
     }
 
     #[test]
@@ -200,5 +317,16 @@ mod tests {
         rule.check_mode = CheckMode::Interval { minutes: 0 };
 
         assert_eq!(rule.validate().len(), 3);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn compares_windows_paths_without_case_sensitivity() {
+        let mut rule = valid_rule();
+        rule.source_dir = PathBuf::from(r"C:\NEWS");
+        rule.destination = r"c:\news\{YYYY}".to_owned();
+        rule.include_subfolders = true;
+
+        assert_eq!(rule.validate().len(), 1);
     }
 }

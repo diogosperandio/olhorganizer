@@ -192,6 +192,7 @@ mod tests {
             action: Action::Move,
             date_source: DateSource::FileName,
             check_mode: CheckMode::Instant,
+            include_subfolders: false,
             on_conflict: ConflictPolicy::Rename,
             priority: 0,
         }

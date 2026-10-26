@@ -11,7 +11,7 @@ pub fn test_rule_with_fs<F: FileSystem + ?Sized>(
     rule: &Rule,
     directory: &Path,
 ) -> Vec<(String, Outcome)> {
-    let mut files = match fs.read_dir(directory) {
+    let mut files = match collect_files(fs, directory, rule.include_subfolders) {
         Ok(files) => files,
         Err(error) => {
             return vec![(
@@ -33,13 +33,55 @@ pub fn test_rule_with_fs<F: FileSystem + ?Sized>(
         })
         .map(|path| {
             let file_name = path
-                .file_name()
-                .map(|name| name.to_string_lossy().into_owned())
+                .strip_prefix(directory)
+                .ok()
+                .filter(|relative| !relative.as_os_str().is_empty())
+                .map(|relative| relative.to_string_lossy().into_owned())
                 .unwrap_or_else(|| path.to_string_lossy().into_owned());
             let outcome = process_with_fs(fs, &path, rule, true);
             (file_name, outcome)
         })
         .collect()
+}
+
+fn collect_files<F: FileSystem + ?Sized>(
+    fs: &F,
+    directory: &Path,
+    recursive: bool,
+) -> std::io::Result<Vec<std::path::PathBuf>> {
+    let mut files = Vec::new();
+    collect_directory(fs, directory, recursive, &mut files)?;
+    files.sort();
+    Ok(files)
+}
+
+fn collect_directory<F: FileSystem + ?Sized>(
+    fs: &F,
+    directory: &Path,
+    recursive: bool,
+    files: &mut Vec<std::path::PathBuf>,
+) -> std::io::Result<()> {
+    let mut entries = fs.read_dir(directory)?;
+    entries.sort();
+    for path in entries {
+        let metadata = fs.symlink_metadata(&path)?;
+        if metadata.file_type().is_symlink() || metadata.is_file() {
+            files.push(path);
+        } else if recursive && metadata.is_dir() && !is_ignored_directory(&path) {
+            collect_directory(fs, &path, true, files)?;
+        }
+    }
+    Ok(())
+}
+
+fn is_ignored_directory(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| {
+            name.starts_with('.')
+                || name.eq_ignore_ascii_case("$RECYCLE.BIN")
+                || name.eq_ignore_ascii_case("System Volume Information")
+        })
 }
 
 #[cfg(test)]
@@ -99,6 +141,7 @@ mod tests {
             action: Action::Move,
             date_source: DateSource::FileName,
             check_mode: CheckMode::Instant,
+            include_subfolders: false,
             on_conflict: ConflictPolicy::Rename,
             priority: 0,
         };
@@ -113,5 +156,46 @@ mod tests {
         assert!(matches!(outcomes[0].1, Outcome::WouldMove { .. }));
         assert_eq!(outcomes[1], ("ignorar.txt".to_owned(), Outcome::NotMatched));
         assert!(!output.exists());
+    }
+
+    #[test]
+    fn recursive_dry_run_lists_relative_paths_and_skips_hidden_folders() {
+        let directory = tempdir().expect("temp directory should be created");
+        let source = directory.path().join("entrada");
+        let output = directory.path().join("saida");
+        fs::create_dir_all(source.join("2025/fotos")).expect("nested source should exist");
+        fs::create_dir_all(source.join(".oculta")).expect("hidden folder should exist");
+        fs::write(source.join("2025/fotos/20261022.pdf"), b"foto")
+            .expect("fixture should be written");
+        fs::write(source.join(".oculta/20261023.pdf"), b"oculto")
+            .expect("fixture should be written");
+        let mut configured_rule = Rule {
+            id: Uuid::new_v4(),
+            name: "Teste".to_owned(),
+            enabled: true,
+            source_dir: source.clone(),
+            filter: "{YYYY}{MM}{DD}.pdf".to_owned(),
+            destination: output.join("{YYYY}/{MM}").to_string_lossy().into_owned(),
+            action: Action::Move,
+            date_source: DateSource::FileName,
+            check_mode: CheckMode::Instant,
+            include_subfolders: false,
+            on_conflict: ConflictPolicy::Rename,
+            priority: 0,
+        };
+        configured_rule.include_subfolders = true;
+        let before = snapshot(directory.path());
+
+        let outcomes = test_rule(&configured_rule, &source);
+
+        assert_eq!(snapshot(directory.path()), before);
+        assert_eq!(outcomes.len(), 1);
+        assert_eq!(
+            outcomes[0].0,
+            Path::new("2025/fotos/20261022.pdf")
+                .to_string_lossy()
+                .into_owned()
+        );
+        assert!(matches!(outcomes[0].1, Outcome::WouldMove { .. }));
     }
 }

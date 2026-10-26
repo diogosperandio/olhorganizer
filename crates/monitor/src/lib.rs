@@ -13,7 +13,9 @@ use notify_debouncer_full::{new_debouncer, DebounceEventResult};
 use tokio::sync::{mpsc, watch, Mutex, RwLock};
 use tokio::task::JoinHandle;
 
-use crate::scan::{check_rule_paths, is_network_path, scan_top_level};
+use crate::scan::{
+    check_rule_paths, is_ignored_directory, is_in_ignored_directory, is_network_path, scan_files,
+};
 use crate::stable::{wait_until_stable, StableOptions};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -305,7 +307,19 @@ async fn run_instant(
             ));
         }
     };
-    if let Err(error) = debouncer.watch(&rule.source_dir, RecursiveMode::NonRecursive) {
+    let recursive_mode = if rule.include_subfolders {
+        RecursiveMode::Recursive
+    } else {
+        RecursiveMode::NonRecursive
+    };
+    if let Err(error) = debouncer.watch(&rule.source_dir, recursive_mode) {
+        #[cfg(target_os = "linux")]
+        if rule.include_subfolders {
+            return SessionEnd::Error(format!(
+                "Não foi possível observar recursivamente a pasta '{}': {error}. O limite do inotify pode ter sido atingido; use o modo 'A cada X minutos' para esta regra.",
+                rule.source_dir.display()
+            ));
+        }
         return SessionEnd::Unavailable(format!(
             "Não foi possível observar a pasta '{}': {error}",
             rule.source_dir.display()
@@ -334,7 +348,17 @@ async fn run_instant(
                 };
                 match result {
                     Ok(events) => {
-                        for path in event_paths(events) {
+                        let paths = match expand_event_paths(rule, event_paths(events)) {
+                            Ok(paths) => paths,
+                            Err(error) => {
+                                send_event(event_tx, MonitorEvent::RuleError {
+                                    rule_id: rule.id,
+                                    message_pt: format!("Não foi possível examinar a nova pasta: {error}"),
+                                });
+                                continue;
+                            }
+                        };
+                        for path in paths {
                             if let Err(reason) = check_rule_paths(rule) {
                                 return SessionEnd::Unavailable(reason);
                             }
@@ -419,7 +443,7 @@ async fn scan_and_process(
     if let Err(reason) = check_rule_paths(rule) {
         return Some(SessionEnd::Unavailable(reason));
     }
-    let files = match scan_top_level(&rule.source_dir) {
+    let files = match scan_files(&rule.source_dir, rule.include_subfolders) {
         Ok(files) => files,
         Err(error) => {
             return Some(SessionEnd::Unavailable(format!(
@@ -437,6 +461,31 @@ async fn scan_and_process(
         }
     }
     None
+}
+
+fn expand_event_paths(rule: &Rule, paths: Vec<PathBuf>) -> std::io::Result<Vec<PathBuf>> {
+    let mut expanded = HashSet::new();
+    for path in paths {
+        match std::fs::symlink_metadata(&path) {
+            Ok(metadata) if metadata.is_dir() && rule.include_subfolders => {
+                if is_ignored_directory(&path) || is_in_ignored_directory(&rule.source_dir, &path) {
+                    continue;
+                }
+                expanded.extend(scan_files(&path, true)?);
+            }
+            Ok(metadata) if metadata.is_file() => {
+                if !is_in_ignored_directory(&rule.source_dir, &path) {
+                    expanded.insert(path);
+                }
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+    }
+    let mut paths: Vec<_> = expanded.into_iter().collect();
+    paths.sort();
+    Ok(paths)
 }
 
 async fn process_candidate(

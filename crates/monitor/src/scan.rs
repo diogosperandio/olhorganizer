@@ -205,8 +205,9 @@ mod tests {
         }
     }
 
+    #[cfg(not(windows))]
     #[test]
-    fn finds_fixed_destination_root() {
+    fn finds_fixed_destination_root_on_unix() {
         assert_eq!(
             destination_root(&rule("/saida/{YYYY}/{MM}")),
             Path::new("/")
@@ -221,5 +222,23 @@ mod tests {
             destination_root(&rule("/media/ana/USB/Jornais/{YYYY}")),
             Path::new("/media/ana/USB")
         );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn finds_fixed_destination_root_on_windows() {
+        assert_eq!(
+            destination_root(&rule(r"C:\saida\{YYYY}\{MM}")),
+            Path::new(r"C:\")
+        );
+        assert_eq!(
+            destination_root(&rule(r"C:\saida\ano-{YYYY}")),
+            Path::new(r"C:\")
+        );
+        assert_eq!(
+            destination_root(&rule(r"\\servidor\arquivos\Jornais\{YYYY}")),
+            Path::new(r"\\servidor\arquivos\")
+        );
+        assert_eq!(destination_root(&rule(r"relativa\{YYYY}")), Path::new("."));
     }
 }

@@ -35,7 +35,9 @@ Cargo workspace (root `Cargo.toml`; build output and `[profile.release]` live at
 - `src/` — UI only. The UI never touches files directly; it calls Tauri commands
   through `src/lib/api.ts`. **`src/lib/types.ts` mirrors `dto.rs`/`events.rs`
   and motor's enums by hand: change both sides together.** Every UI text lives
-  in `src/lib/i18n/pt-BR.ts` (use `t(key)`); components in `src/lib/components/`.
+  in `src/lib/i18n/pt-BR.ts` (use `t(key)`); components in `src/lib/components/`
+  (rule wizard in `wizard/`, filter/destination helpers in `src/lib/rule-draft.ts`).
+  Plugin: dialog, folder picker only (`dialog:allow-open`).
 
 ## Markers
 
@@ -139,7 +141,7 @@ must stay valid, or `cargo test -p motor` fails.
   - [x] 4b. Include subfolders per rule, rule-cycle check, circuit breaker
 - [x] 5. Tauri wiring: state, commands, events, history, logging (debug page)
 - [x] 6. Main screen: rule cards (status, switch, menu, reorder, live updates)
-- [ ] 7. UI: rule editor (adds the "Incluir subpastas" switch)
+- [x] 7. Rule wizard (create/edit, live preview, validation, test before saving)
 - [ ] 8. (title TBD)
 - [ ] 9. (title TBD)
 - [ ] 10. (title TBD)

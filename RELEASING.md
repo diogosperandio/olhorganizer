@@ -13,10 +13,12 @@ scripts/release.sh 0.1.0
 # ou simplesmente: scripts/release.sh
 ```
 
-O script confirma a branch e o estado do repositório, sincroniza as tags,
-sugere a próxima versão patch, executa formatação, clippy, testes e build,
-chama `scripts/bump-version.sh`, cria o commit e a tag, e envia ambos ao GitHub.
-Se o GitHub CLI (`gh`) estiver autenticado, também pode acompanhar o workflow.
+O script confirma a branch e o estado do repositório. Se estiver em uma branch
+diferente de `main`/`master`, permite continuar nela, trocar para outra branch
+local ou cancelar. Depois sincroniza as tags, sugere a próxima versão patch,
+executa formatação, clippy, testes e build, chama `scripts/bump-version.sh`, cria
+o commit e a tag, e envia ambos ao GitHub. Se o GitHub CLI (`gh`) estiver
+autenticado, também pode acompanhar o workflow.
 
 Para conferir todo o plano sem alterar arquivos nem enviar nada:
 

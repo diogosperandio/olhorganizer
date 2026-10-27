@@ -79,16 +79,59 @@ cd "$project_dir"
 git remote get-url origin >/dev/null 2>&1 \
   || die "O remote 'origin' não está configurado."
 
-branch="$(git branch --show-current)"
-[[ -n "$branch" ]] || die "HEAD destacado: entre em uma branch antes de lançar."
-if [[ "$branch" != "main" && "$branch" != "master" ]]; then
-  warn "Você está na branch '$branch' (não é main/master)."
-  ask_yes_no "Continuar mesmo assim?" n || exit 1
-fi
-
 if [[ -n "$(git status --porcelain)" ]]; then
   git status --short
   die "Há alterações não commitadas. Faça commit ou stash antes de lançar."
+fi
+
+branch="$(git branch --show-current)"
+[[ -n "$branch" ]] || die "HEAD destacado: entre em uma branch antes de lançar."
+
+if [[ "$branch" != "main" && "$branch" != "master" ]]; then
+  mapfile -t local_branches < <(
+    git for-each-ref --format='%(refname:short)' refs/heads/ \
+      | grep -Fvx "$branch" \
+      | sort
+  )
+
+  echo
+  warn "Você está na branch '$branch' (não é main/master)."
+  echo "  1) Continuar na branch '$branch'"
+  option=2
+  for candidate in "${local_branches[@]}"; do
+    echo "  $option) Trocar para a branch '$candidate'"
+    option=$((option + 1))
+  done
+  echo "  0) Cancelar"
+
+  while true; do
+    read -r -p "Escolha uma opção [0]: " branch_option || branch_option="0"
+    branch_option="${branch_option:-0}"
+
+    if [[ "$branch_option" == "0" ]]; then
+      echo "Cancelado. Nada foi alterado."
+      exit 0
+    fi
+    if [[ "$branch_option" == "1" ]]; then
+      break
+    fi
+    if [[ "$branch_option" =~ ^[0-9]+$ ]] \
+      && ((branch_option >= 2 && branch_option < option)); then
+      selected_branch="${local_branches[branch_option - 2]}"
+      if [[ "$dry_run" -eq 1 ]]; then
+        echo "[dry-run] git switch $selected_branch"
+        warn "A troca não foi feita. Para simular a release completa nessa branch, troque para ela antes de usar --dry-run."
+        exit 0
+      fi
+      git switch "$selected_branch" \
+        || die "Não foi possível trocar para a branch '$selected_branch'."
+      branch="$selected_branch"
+      ok "Branch alterada para '$branch'."
+      break
+    fi
+
+    warn "Opção inválida. Escolha um dos números exibidos."
+  done
 fi
 
 info "Sincronizando tags com o GitHub..."

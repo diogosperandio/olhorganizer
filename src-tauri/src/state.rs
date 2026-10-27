@@ -12,6 +12,7 @@ pub struct AppState {
     pub monitor: Mutex<Monitor>,
     pub mutation: Mutex<()>,
     pub config_path: PathBuf,
+    pub log_dir: PathBuf,
     pub history: Arc<History>,
 }
 
@@ -20,6 +21,7 @@ impl AppState {
         config: Config,
         monitor: Monitor,
         config_path: PathBuf,
+        log_dir: PathBuf,
         history: Arc<History>,
     ) -> Self {
         Self {
@@ -27,6 +29,7 @@ impl AppState {
             monitor: Mutex::new(monitor),
             mutation: Mutex::new(()),
             config_path,
+            log_dir,
             history,
         }
     }

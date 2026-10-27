@@ -27,6 +27,8 @@ export interface Settings {
   startWithSystem: boolean;
 }
 
+export type ImportMode = "replace" | "add";
+
 export type Outcome =
   | { kind: "moved"; to: string }
   | { kind: "copied"; to: string }

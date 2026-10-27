@@ -63,7 +63,7 @@ cargo fmt --all
 - [x] Step 5 — Recursive folder monitoring
 - [x] Step 6 — Application service integration
 - [x] Step 7 — Rule editor UI
-- [ ] Step 8 — Activity and notifications
+- [x] Step 8 — Activity and notifications
 - [ ] Step 9 — Tray and startup integration
 - [ ] Step 10 — Updates and packaging
 - [ ] Step 11 — Platform validation

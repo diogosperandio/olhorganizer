@@ -3,7 +3,9 @@
   import { deleteRule, getHistory, listRules, onFileProcessed, onRuleError, onRulePaused, reorderRules, saveRule, testRule, toggleRule } from "$lib/api";
   import ConfirmDialog from "$lib/components/ConfirmDialog.svelte";
   import EmptyState from "$lib/components/EmptyState.svelte";
+  import HistoryView from "$lib/components/HistoryView.svelte";
   import RuleList from "$lib/components/RuleList.svelte";
+  import SettingsView from "$lib/components/SettingsView.svelte";
   import RuleWizard from "$lib/components/wizard/RuleWizard.svelte";
   import type { CardAction, RuleActivity } from "$lib/components/RuleCard.svelte";
   import { ptBR } from "$lib/i18n/pt-BR";
@@ -18,7 +20,9 @@
   let deleteCandidate = $state<Rule | null>(null);
   let wizardOpen = $state(false);
   let wizardRule = $state<Rule | undefined>(undefined);
+  let view = $state<"rules" | "history" | "settings">("rules");
   const sortedRules = $derived([...rules].sort((a, b) => a.priority - b.priority));
+  const currentPageTitle = $derived(view === "history" ? ptBR.historyPageTitle : view === "settings" ? ptBR.settingsPageTitle : ptBR.pageTitle);
 
   function setBusy(id: string, busy: boolean) {
     const next = new Set(busyIds); if (busy) next.add(id); else next.delete(id); busyIds = next;
@@ -106,19 +110,23 @@
   });
 </script>
 
-<svelte:head><title>{ptBR.pageTitle}</title></svelte:head>
+<svelte:head><title>{currentPageTitle}</title></svelte:head>
 
 <header><div class="header-inner">
-  <a class="brand" href="/" aria-label={ptBR.appName}><span aria-hidden="true">O</span>{ptBR.appName}</a>
-  <nav aria-label={ptBR.appName}><button type="button" onclick={() => showNotice(ptBR.comingSoon)}>{ptBR.history}</button><button type="button" onclick={() => showNotice(ptBR.comingSoon)}>{ptBR.settings}</button></nav>
+  <button class="brand" type="button" aria-label={ptBR.rulesNav} onclick={() => (view = "rules")}><span aria-hidden="true">O</span>{ptBR.appName}</button>
+  <nav aria-label={ptBR.appName}><button class:active={view === "rules"} type="button" onclick={() => (view = "rules")}>{ptBR.rulesNav}</button><button class:active={view === "history"} type="button" onclick={() => (view = "history")}>{ptBR.history}</button><button class:active={view === "settings"} type="button" onclick={() => (view = "settings")}>{ptBR.settings}</button></nav>
 </div></header>
 
 <main>
+  {#if view === "rules"}
   <section class="intro"><div><h1>{ptBR.rulesHeading}</h1><p>{ptBR.rulesSummary}</p></div><button class="primary" type="button" onclick={() => openWizard()}>{ptBR.newRule}</button></section>
   {#if loading}<div class="state-message" aria-live="polite">{ptBR.loadingRules}</div>
   {:else if loadFailed}<div class="state-message error"><p>{ptBR.loadError}</p><button type="button" onclick={load}>{ptBR.tryAgain}</button></div>
   {:else if sortedRules.length === 0}<EmptyState onNew={() => openWizard()} />
   {:else}<RuleList rules={sortedRules} {activities} {busyIds} onToggle={changeEnabled} onResume={resumeRule} onAction={handleAction} onReorder={reorder} />{/if}
+  {:else if view === "history"}<HistoryView rules={sortedRules} onNotice={showNotice} />
+  {:else}<SettingsView onNotice={showNotice} onRulesImported={(imported) => (rules = imported)} />
+  {/if}
 </main>
 
 {#if notice}<div class="toast" role="status"><span>{notice}</span><button type="button" aria-label={ptBR.closeMessage} onclick={() => (notice = "")}>×</button></div>{/if}
@@ -138,10 +146,11 @@
   :global(button:focus-visible), :global(a:focus-visible), :global([tabindex]:focus-visible) { outline: 3px solid color-mix(in srgb, var(--accent) 42%, transparent); outline-offset: 2px; }
   header { border-bottom: 1px solid var(--border); background: color-mix(in srgb, var(--surface) 94%, transparent); }
   .header-inner { display: flex; align-items: center; justify-content: space-between; width: min(880px, 100%); min-height: 68px; margin: 0 auto; padding: 0 1.5rem; }
-  .brand { display: flex; align-items: center; gap: .65rem; color: var(--text); font-size: 1.08rem; font-weight: 780; text-decoration: none; }
+  .brand { display: flex; align-items: center; gap: .65rem; padding: 0; border: 0; color: var(--text); background: transparent; font: inherit; font-size: 1.08rem; font-weight: 780; cursor: pointer; }
   .brand span { display: grid; place-items: center; width: 34px; height: 34px; border-radius: .7rem; color: white; background: var(--accent); font-size: .95rem; }
   nav { display: flex; gap: .35rem; } nav button { min-height: 40px; padding: .55rem .8rem; border: 0; border-radius: .55rem; color: var(--text-soft); background: transparent; font: inherit; font-weight: 600; cursor: pointer; }
   nav button:hover { color: var(--text); background: var(--surface-raised); }
+  nav button.active { color: var(--accent-strong); background: var(--accent-soft); }
   main { width: min(880px, 100%); margin: 0 auto; padding: 1.55rem 1.5rem 2.5rem; }
   .intro { display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin-bottom: 1.25rem; }
   h1 { margin: 0; font-size: clamp(1.35rem, 3vw, 1.75rem); letter-spacing: -.025em; } .intro p { margin: .3rem 0 0; color: var(--text-soft); font-size: .9rem; }

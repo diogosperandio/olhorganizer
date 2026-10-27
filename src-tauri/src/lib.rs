@@ -20,6 +20,7 @@ use tracing_subscriber::util::SubscriberInitExt;
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let result = tauri::Builder::default()
+        .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             setup_app(app).map_err(std::io::Error::other)?;
@@ -40,6 +41,9 @@ pub fn run() {
             commands::get_history,
             commands::get_settings,
             commands::save_settings,
+            commands::export_rules,
+            commands::import_rules,
+            commands::get_log_path,
         ])
         .run(tauri::generate_context!());
 
@@ -84,7 +88,13 @@ fn setup_app(app: &mut tauri::App) -> Result<(), String> {
     let (event_tx, event_rx) = mpsc::unbounded_channel();
     let monitor = Monitor::start(config.clone(), event_tx);
     forward_monitor_events(app.handle().clone(), event_rx, Arc::clone(&history));
-    app.manage(AppState::new(config, monitor, config_path, history));
+    app.manage(AppState::new(
+        config,
+        monitor,
+        config_path,
+        log_dir,
+        history,
+    ));
     Ok(())
 }
 

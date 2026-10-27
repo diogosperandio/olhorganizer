@@ -8,6 +8,9 @@
   "permissions": [
     "core:default",
     "core:event:allow-listen",
-    "dialog:allow-open"
+    "dialog:allow-open",
+    "dialog:allow-save",
+    "opener:default",
+    "opener:allow-open-path"
   ]
 }

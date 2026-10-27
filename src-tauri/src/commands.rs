@@ -1,5 +1,7 @@
 use std::collections::HashSet;
+use std::fs;
 use std::path::PathBuf;
+use std::time::SystemTime;
 
 use motor::{
     Action, CheckMode, Config, ConflictPolicy, DateSource, FilterTemplate, MarkerDef, MarkerKind,
@@ -110,6 +112,13 @@ pub struct TestRow {
 pub struct ValidationResult {
     pub errors: Vec<String>,
     pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ImportMode {
+    Replace,
+    Add,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -344,6 +353,116 @@ pub async fn save_settings(
     Ok(settings)
 }
 
+#[tauri::command]
+pub async fn export_rules(path: PathBuf, state: State<'_, AppState>) -> Result<(), String> {
+    let config = state.config.lock().await.clone();
+    tauri::async_runtime::spawn_blocking(move || config.save(&path))
+        .await
+        .map_err(|error| format!("Não foi possível concluir a exportação: {error}"))?
+        .map_err(|error| format!("Não foi possível exportar as regras: {error}"))
+}
+
+#[tauri::command]
+pub async fn import_rules(
+    path: PathBuf,
+    mode: ImportMode,
+    state: State<'_, AppState>,
+) -> Result<Vec<RuleDto>, String> {
+    let imported = tauri::async_runtime::spawn_blocking(move || {
+        if !path.is_file() {
+            return Err("O arquivo escolhido não existe ou não pode ser lido.".to_owned());
+        }
+        Config::import(&path)
+            .map_err(|error| format!("Não foi possível importar as regras: {error}"))
+    })
+    .await
+    .map_err(|error| format!("Não foi possível concluir a importação: {error}"))??;
+
+    let _mutation = state.mutation.lock().await;
+    let mut candidate = state.config.lock().await.clone();
+    match mode {
+        ImportMode::Replace => candidate.rules = imported.rules,
+        ImportMode::Add => append_imported_rules(&mut candidate, imported.rules)?,
+    }
+    validate_candidate(&candidate)?;
+    let response = candidate.rules.clone();
+    persist_and_reload(&state, candidate).await?;
+    Ok(response.into_iter().map(Into::into).collect())
+}
+
+#[tauri::command]
+pub async fn get_log_path(state: State<'_, AppState>) -> Result<String, String> {
+    let log_dir = state.log_dir.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let entries = fs::read_dir(&log_dir)
+            .map_err(|error| format!("Não foi possível acessar a pasta de logs: {error}"))?;
+        let mut latest: Option<(SystemTime, PathBuf)> = None;
+        for entry in entries {
+            let entry = entry
+                .map_err(|error| format!("Não foi possível ler um arquivo de log: {error}"))?;
+            let path = entry.path();
+            let is_log = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with("olhorganizer.log"));
+            if !is_log {
+                continue;
+            }
+            let modified = entry
+                .metadata()
+                .and_then(|metadata| metadata.modified())
+                .unwrap_or(SystemTime::UNIX_EPOCH);
+            if latest
+                .as_ref()
+                .is_none_or(|(current, _)| modified > *current)
+            {
+                latest = Some((modified, path));
+            }
+        }
+        latest
+            .map(|(_, path)| path.to_string_lossy().into_owned())
+            .ok_or_else(|| "Ainda não há um arquivo de log para abrir.".to_owned())
+    })
+    .await
+    .map_err(|error| format!("Não foi possível procurar o arquivo de log: {error}"))?
+}
+
+fn append_imported_rules(config: &mut Config, rules: Vec<Rule>) -> Result<(), String> {
+    let mut ids: HashSet<_> = config.rules.iter().map(|rule| rule.id).collect();
+    let mut priority = config
+        .rules
+        .iter()
+        .map(|rule| rule.priority)
+        .max()
+        .unwrap_or(0);
+    for mut rule in rules {
+        if ids.contains(&rule.id) {
+            rule.id = Uuid::new_v4();
+        }
+        ids.insert(rule.id);
+        priority = priority
+            .checked_add(1)
+            .ok_or_else(|| "Há regras demais para importar.".to_owned())?;
+        rule.priority = priority;
+        config.rules.push(rule);
+    }
+    Ok(())
+}
+
+fn validate_candidate(config: &Config) -> Result<(), String> {
+    for rule in &config.rules {
+        let problems = rule.validate();
+        if !problems.is_empty() {
+            return Err(format!(
+                "A regra '{}' do arquivo importado não é válida: {}",
+                rule.name,
+                problems.join(" ")
+            ));
+        }
+    }
+    ensure_no_cycles(config)
+}
+
 async fn persist_and_reload(state: &AppState, candidate: Config) -> Result<(), String> {
     candidate
         .save(&state.config_path)
@@ -371,5 +490,54 @@ fn marker_kind_name(kind: MarkerKind) -> &'static str {
         MarkerKind::Day2 => "day2",
         MarkerKind::Name => "name",
         MarkerKind::Ext => "ext",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rule(id: Uuid, name: &str, priority: u32) -> Rule {
+        let root = std::env::temp_dir().join("olhorganizer-import-tests");
+        Rule {
+            id,
+            name: name.to_owned(),
+            enabled: true,
+            source_dir: root.join(name).join("entrada"),
+            filter: "*.pdf".to_owned(),
+            destination: root.join(name).join("saida").to_string_lossy().into_owned(),
+            action: Action::Move,
+            date_source: DateSource::Modified,
+            check_mode: CheckMode::Instant,
+            include_subfolders: false,
+            on_conflict: ConflictPolicy::Rename,
+            priority,
+        }
+    }
+
+    #[test]
+    fn adding_imported_rules_resolves_ids_and_priorities() {
+        let shared_id = Uuid::new_v4();
+        let mut config = Config::default();
+        config.rules.push(rule(shared_id, "Atual", 7));
+
+        append_imported_rules(&mut config, vec![rule(shared_id, "Importada", 0)])
+            .expect("import should be merged");
+
+        assert_eq!(config.rules.len(), 2);
+        assert_ne!(config.rules[0].id, config.rules[1].id);
+        assert_eq!(config.rules[1].priority, 8);
+    }
+
+    #[test]
+    fn invalid_import_candidate_is_rejected() {
+        let mut config = Config::default();
+        let mut invalid = rule(Uuid::new_v4(), "Inválida", 0);
+        invalid.source_dir = PathBuf::from("pasta-relativa");
+        config.rules.push(invalid);
+
+        let error = validate_candidate(&config).expect_err("invalid rule must be rejected");
+
+        assert!(error.contains("não é válida"));
     }
 }

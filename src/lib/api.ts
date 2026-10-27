@@ -5,6 +5,7 @@ import type {
   FileProcessedPayload,
   FilterTemplate,
   HistoryEntry,
+  ImportMode,
   MarkerDef,
   Rule,
   RuleErrorPayload,
@@ -35,6 +36,10 @@ export const getHistory = (limit: number): Promise<HistoryEntry[]> =>
 export const getSettings = (): Promise<Settings> => invoke("get_settings");
 export const saveSettings = (settings: Settings): Promise<Settings> =>
   invoke("save_settings", { settings });
+export const exportRules = (path: string): Promise<void> => invoke("export_rules", { path });
+export const importRules = (path: string, mode: ImportMode): Promise<Rule[]> =>
+  invoke("import_rules", { path, mode });
+export const getLogPath = (): Promise<string> => invoke("get_log_path");
 
 export const onFileProcessed = (
   handler: (payload: FileProcessedPayload) => void,

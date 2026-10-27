@@ -6,14 +6,17 @@ uma revisão manual.
 
 ## Como publicar
 
-O Branch de desenvolvimento é Codex, com o tempo, o Branch main vai se desatualizando. Então temos que trocar para Main (1), atualizar Main local com remoto (2). Em seguida copiar (commit) de Codex para Main (3). Depois publicar Main (publish) (4)
+O Branch de desenvolvimento é Codex, logo com o tempo o branch `main` vai se desatualizando. Então temos que trocar o branch ativo para `main` (1), atualizar `main` local com remoto (2). Em seguida copiar (commit) do branch `Codex` para `main` (3). Depois publicar `main` (publish) (4)
 ``` sh
 git checkout main  (1)
 git pull origin main (2)
 git merge Codex -m "Merging Codex into Main"  (3)
 git push origin main  (4)
 ```
-
+Ainda em Main, executar:
+```sh
+scripts/release.sh
+```
 
 ## Fluxo recomendado (automático)
 

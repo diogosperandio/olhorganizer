@@ -146,7 +146,7 @@ pub(crate) fn is_network_path(path: &Path) -> bool {
     #[cfg(windows)]
     {
         let path = path.to_string_lossy();
-        return path.starts_with(r"\\") || path.starts_with("//");
+        path.starts_with(r"\\") || path.starts_with("//")
     }
 
     #[cfg(target_os = "linux")]

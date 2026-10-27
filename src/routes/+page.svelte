@@ -1,15 +1,17 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { deleteRule, getHistory, listRules, onFileProcessed, onRuleError, onRulePaused, reorderRules, saveRule, testRule, toggleRule } from "$lib/api";
+  import { deleteRule, getHistory, listRules, onFileProcessed, onNavigateHistory, onRuleError, onRulePaused, reorderRules, saveRule, testRule, toggleRule } from "$lib/api";
   import ConfirmDialog from "$lib/components/ConfirmDialog.svelte";
   import EmptyState from "$lib/components/EmptyState.svelte";
   import HistoryView from "$lib/components/HistoryView.svelte";
   import RuleList from "$lib/components/RuleList.svelte";
   import SettingsView from "$lib/components/SettingsView.svelte";
+  import UpdateDialog from "$lib/components/UpdateDialog.svelte";
   import RuleWizard from "$lib/components/wizard/RuleWizard.svelte";
   import type { CardAction, RuleActivity } from "$lib/components/RuleCard.svelte";
   import { ptBR } from "$lib/i18n/pt-BR";
   import type { AppEvent, FileProcessedPayload, HistoryEntry, Rule } from "$lib/types";
+  import { installAvailableUpdate, postponeUpdate, scheduleStartupUpdateCheck, skipAvailableVersion, subscribeToUpdater, type UpdateDialogState } from "$lib/updater";
 
   let rules = $state<Rule[]>([]);
   let activities = $state<Record<string, RuleActivity>>({});
@@ -21,6 +23,7 @@
   let wizardOpen = $state(false);
   let wizardRule = $state<Rule | undefined>(undefined);
   let view = $state<"rules" | "history" | "settings">("rules");
+  let availableUpdate = $state<UpdateDialogState | null>(null);
   const sortedRules = $derived([...rules].sort((a, b) => a.priority - b.priority));
   const currentPageTitle = $derived(view === "history" ? ptBR.historyPageTitle : view === "settings" ? ptBR.settingsPageTitle : ptBR.pageTitle);
 
@@ -104,9 +107,11 @@
   }
 
   onMount(() => {
-    const subscriptions = [onFileProcessed(applyFileProcessed), onRuleError((payload) => applyEvent({ name: "rule-error", payload })), onRulePaused((payload) => applyEvent({ name: "rule-paused", payload }))];
+    const subscriptions = [onFileProcessed(applyFileProcessed), onRuleError((payload) => applyEvent({ name: "rule-error", payload })), onRulePaused((payload) => applyEvent({ name: "rule-paused", payload })), onNavigateHistory(() => (view = "history"))];
+    const unsubscribeUpdater = subscribeToUpdater((state) => (availableUpdate = state));
+    const cancelStartupCheck = scheduleStartupUpdateCheck();
     void load();
-    return () => { for (const subscription of subscriptions) void subscription.then((unlisten) => unlisten()); };
+    return () => { for (const subscription of subscriptions) void subscription.then((unlisten) => unlisten()); unsubscribeUpdater(); cancelStartupCheck(); };
   });
 </script>
 
@@ -132,6 +137,7 @@
 {#if notice}<div class="toast" role="status"><span>{notice}</span><button type="button" aria-label={ptBR.closeMessage} onclick={() => (notice = "")}>×</button></div>{/if}
 {#if deleteCandidate}<ConfirmDialog title={ptBR.confirmDelete} message={`${ptBR.deleteConfirmPrefix}${deleteCandidate.name}${ptBR.deleteConfirmSuffix}`} onConfirm={confirmDelete} onCancel={() => (deleteCandidate = null)} />{/if}
 {#if wizardOpen}<RuleWizard rule={wizardRule} nextPriority={Math.max(-1, ...rules.map((rule) => rule.priority)) + 1} onClose={() => { wizardOpen = false; wizardRule = undefined; }} onSaved={wizardSaved} />{/if}
+{#if availableUpdate}<UpdateDialog update={availableUpdate} onInstall={() => void installAvailableUpdate()} onLater={() => void postponeUpdate()} onSkip={() => void skipAvailableVersion()} />{/if}
 
 <style>
   :global(*) { box-sizing: border-box; }

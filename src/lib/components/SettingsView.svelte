@@ -6,6 +6,7 @@
   import { exportRules, getSettings, importRules, saveSettings } from "$lib/api";
   import { ptBR } from "$lib/i18n/pt-BR";
   import type { ImportMode, Rule, Settings } from "$lib/types";
+  import { checkForUpdatesNow } from "$lib/updater";
 
   let { onRulesImported, onNotice }: { onRulesImported: (rules: Rule[]) => void; onNotice: (message: string) => void } = $props();
   let settings = $state<Settings | null>(null);
@@ -16,6 +17,7 @@
   let importDialog = $state<HTMLDialogElement>();
   let saveQueue = Promise.resolve();
   let settingsRevision = 0;
+  let checkingUpdates = $state(false);
 
   function updateSetting<K extends keyof Settings>(key: K, value: Settings[K]) {
     if (!settings) return;
@@ -65,6 +67,13 @@
     finally { importing = false; }
   }
 
+  async function checkNow() {
+    if (checkingUpdates) return;
+    checkingUpdates = true;
+    try { await checkForUpdatesNow(() => onNotice(ptBR.alreadyLatest)); }
+    finally { checkingUpdates = false; }
+  }
+
   onMount(() => {
     void Promise.all([getSettings(), getVersion()]).then(([loaded, appVersion]) => { settings = loaded; version = appVersion; }).catch((error) => (loadingError = `${ptBR.settingsLoadError} ${String(error)}`));
   });
@@ -89,7 +98,7 @@
   </section>
   <section class="settings-card">
     <div class="setting-copy"><h2>{ptBR.updatesSetting}</h2><p>{ptBR.updatesHelp}</p></div>
-    <div class="setting-actions"><button class="secondary" type="button" onclick={() => onNotice(ptBR.updaterPlaceholder)}>{ptBR.checkNow}</button><button class="switch" class:on={settings.checkUpdatesOnStart} type="button" role="switch" aria-checked={settings.checkUpdatesOnStart} aria-label={ptBR.updatesSetting} onclick={() => updateSetting("checkUpdatesOnStart", !settings?.checkUpdatesOnStart)}><span></span></button></div>
+    <div class="setting-actions"><button class="secondary" type="button" disabled={checkingUpdates} onclick={checkNow}>{checkingUpdates ? ptBR.checkingUpdates : ptBR.checkNow}</button><button class="switch" class:on={settings.checkUpdatesOnStart} type="button" role="switch" aria-checked={settings.checkUpdatesOnStart} aria-label={ptBR.updatesSetting} onclick={() => updateSetting("checkUpdatesOnStart", !settings?.checkUpdatesOnStart)}><span></span></button></div>
   </section>
   <section class="settings-card transfer">
     <div class="setting-copy"><h2>{ptBR.rulesTransfer}</h2><p>{ptBR.rulesTransferHelp}</p></div>
@@ -111,7 +120,7 @@
   .settings-list { display: grid; gap: .7rem; } .settings-card { display: flex; align-items: center; justify-content: space-between; gap: 1rem; min-height: 82px; padding: .9rem 1rem; border: 1px solid var(--border); border-radius: .8rem; background: var(--surface); box-shadow: var(--shadow-sm); }
   .setting-copy { min-width: 0; } .setting-copy h2 { margin: 0; font-size: .98rem; } .setting-copy p { margin: .28rem 0 0; color: var(--text-soft); font-size: .81rem; line-height: 1.4; }
   .switch { position: relative; width: 46px; min-width: 46px; height: 40px; border: 0; border-radius: 999px; background: var(--switch-off); cursor: pointer; } .switch span { position: absolute; top: 9px; left: 7px; width: 22px; height: 22px; border-radius: 50%; background: white; box-shadow: 0 1px 4px rgb(0 0 0 / .24); transition: 150ms; } .switch.on { background: var(--accent); } .switch.on span { transform: translateX(10px); }
-  .setting-actions, .about-details { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: .5rem; } .secondary, .about-details button { min-height: 40px; padding: .5rem .7rem; border: 1px solid var(--border); border-radius: .55rem; color: var(--text); background: var(--surface-raised); font: inherit; font-weight: 650; cursor: pointer; }
+  .setting-actions, .about-details { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: .5rem; } .secondary, .about-details button { min-height: 40px; padding: .5rem .7rem; border: 1px solid var(--border); border-radius: .55rem; color: var(--text); background: var(--surface-raised); font: inherit; font-weight: 650; cursor: pointer; } .secondary:disabled { opacity: .55; cursor: wait; }
   .about-details { color: var(--text-soft); font-size: .82rem; } .about-details button { color: var(--accent-strong); }
   .view-state { display: grid; place-items: center; min-height: 220px; color: var(--text-soft); } .view-state.error { color: var(--danger); }
   .import-dialog { position: fixed; width: min(460px, calc(100% - 2rem)); padding: 1.3rem; border: 0; border-radius: .9rem; color: var(--text); background: var(--surface); box-shadow: var(--shadow-lg); } .import-dialog::backdrop { background: rgb(10 20 15 / .58); } .import-dialog h2 { margin: 0; font-size: 1.1rem; } .import-dialog p { color: var(--text-soft); line-height: 1.5; }

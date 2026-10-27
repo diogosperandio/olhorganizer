@@ -1,8 +1,8 @@
 [package]
 name = "olhorganizer"
 version = "0.1.0"
-description = "A Tauri App"
-authors = ["you"]
+description = "Organiza arquivos automaticamente com regras simples."
+authors = ["Diogo Sperandio"]
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -20,12 +20,22 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 motor = { path = "../crates/motor" }
 monitor = { path = "../crates/monitor", default-features = false }
-tauri = { version = "2", features = [] }
+tauri = { version = "2", features = ["tray-icon"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tokio = { version = "1", features = ["sync"] }
+tokio = { version = "1", features = ["sync", "time"] }
 tracing = "0.1"
 tracing-appender = "0.2"
 tracing-subscriber = { version = "0.3", features = ["fmt"] }
 tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"
+tauri-plugin-notification = "2"
+tauri-plugin-process = "2"
+
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+tauri-plugin-autostart = "2"
+tauri-plugin-single-instance = "2"
+tauri-plugin-updater = "2"
+
+[dev-dependencies]
+tempfile = "3"

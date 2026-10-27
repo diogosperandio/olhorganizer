@@ -27,6 +27,8 @@ export interface Settings {
   startWithSystem: boolean;
 }
 
+export type UpdateInstallKind = "automatic" | "browser";
+
 export type ImportMode = "replace" | "add";
 
 export type Outcome =

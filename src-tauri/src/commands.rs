@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 use std::fs;
 use std::path::PathBuf;
+use std::sync::atomic::Ordering;
 use std::time::SystemTime;
 
 use motor::{
@@ -348,8 +349,19 @@ pub async fn save_settings(
 ) -> Result<SettingsDto, String> {
     let _mutation = state.mutation.lock().await;
     let mut candidate = state.config.lock().await.clone();
+    let previous_autostart = candidate.settings.start_with_system;
     candidate.settings = settings.clone().into();
-    persist_and_reload(&state, candidate).await?;
+    if previous_autostart != settings.start_with_system {
+        crate::apply_autostart(&state.app, settings.start_with_system)?;
+    }
+    if let Err(error) = persist_and_reload(&state, candidate).await {
+        if previous_autostart != settings.start_with_system {
+            if let Err(rollback_error) = crate::apply_autostart(&state.app, previous_autostart) {
+                tracing::error!(%rollback_error, "não foi possível restaurar o início automático");
+            }
+        }
+        return Err(error);
+    }
     Ok(settings)
 }
 
@@ -427,6 +439,56 @@ pub async fn get_log_path(state: State<'_, AppState>) -> Result<String, String> 
     .map_err(|error| format!("Não foi possível procurar o arquivo de log: {error}"))?
 }
 
+#[tauri::command]
+pub async fn prepare_for_update(state: State<'_, AppState>) -> Result<(), String> {
+    let _mutation = state.mutation.lock().await;
+    state.monitor.lock().await.stop().await;
+    tracing::info!("monitor interrompido para instalar uma atualização");
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn resume_monitor_after_update_error(state: State<'_, AppState>) -> Result<(), String> {
+    let _mutation = state.mutation.lock().await;
+    let config = state.config.lock().await.clone();
+    let monitor_config = if state.all_rules_paused.load(Ordering::Relaxed) {
+        crate::tray::disabled_config(&config)
+    } else {
+        config
+    };
+    state.monitor.lock().await.reload(monitor_config).await;
+    tracing::info!("monitor retomado depois de uma falha na atualização");
+    Ok(())
+}
+
+#[tauri::command]
+#[cfg(target_os = "linux")]
+pub fn update_install_kind() -> Result<&'static str, String> {
+    Ok(if std::env::var_os("APPIMAGE").is_some() {
+        "automatic"
+    } else {
+        "browser"
+    })
+}
+
+#[tauri::command]
+#[cfg(not(target_os = "linux"))]
+pub fn update_install_kind() -> Result<&'static str, String> {
+    Ok("automatic")
+}
+
+#[tauri::command]
+pub fn log_update_error(message: String) -> Result<(), String> {
+    tracing::warn!(error = %message, "não foi possível atualizar o aplicativo");
+    Ok(())
+}
+
+#[tauri::command]
+pub fn show_update_window(app: tauri::AppHandle) -> Result<(), String> {
+    crate::tray::show_main_window(&app);
+    Ok(())
+}
+
 fn append_imported_rules(config: &mut Config, rules: Vec<Rule>) -> Result<(), String> {
     let mut ids: HashSet<_> = config.rules.iter().map(|rule| rule.id).collect();
     let mut priority = config
@@ -468,7 +530,13 @@ async fn persist_and_reload(state: &AppState, candidate: Config) -> Result<(), S
         .save(&state.config_path)
         .map_err(|error| format!("Não foi possível salvar a configuração: {error}"))?;
     *state.config.lock().await = candidate.clone();
-    state.monitor.lock().await.reload(candidate).await;
+    let monitor_config = if state.all_rules_paused.load(Ordering::Relaxed) {
+        crate::tray::disabled_config(&candidate)
+    } else {
+        candidate.clone()
+    };
+    state.monitor.lock().await.reload(monitor_config).await;
+    crate::tray::sync_rules(&state.app, &candidate);
     Ok(())
 }
 

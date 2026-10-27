@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "olhorganizer",
+  "productName": "Olhorganizer",
   "version": "0.1.0",
-  "identifier": "com.diogosperandio.olhorganizer-codex",
+  "identifier": "com.diogosperandio.olhorganizer",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "olhorganizer",
+        "title": "Olhorganizer",
         "width": 800,
         "height": 600
       }
@@ -24,12 +24,56 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "createUpdaterArtifacts": true,
+    "publisher": "Diogo Sperandio",
+    "category": "Utility",
+    "shortDescription": "Organize arquivos automaticamente.",
+    "longDescription": "O Olhorganizer monitora suas pastas e move ou copia arquivos automaticamente para destinos organizados por data, nome e tipo.",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "windows": {
+      "webviewInstallMode": {
+        "type": "downloadBootstrapper",
+        "silent": true
+      },
+      "nsis": {
+        "languages": [
+          "PortugueseBR",
+          "English"
+        ],
+        "displayLanguageSelector": true
+      }
+    },
+    "linux": {
+      "deb": {
+        "depends": [
+          "libwebkit2gtk-4.1-0",
+          "libayatana-appindicator3-1"
+        ]
+      },
+      "rpm": {
+        "depends": [
+          "webkit2gtk4.1",
+          "libayatana-appindicator-gtk3"
+        ]
+      }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDNDMjJCNzg4NjI1RjI1RUIKUldUckpWOWlpTGNpUEc3eGRpSU9RczhSR3ltb21qbVlHRTBWT0pyR0w3emd5NFFVaHk5VW10MWoK",
+      "endpoints": [
+        "https://github.com/diogosperandio/olhorganizer/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      },
+      "requireSignedVersion": true
+    }
   }
 }

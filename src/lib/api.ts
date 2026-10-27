@@ -12,6 +12,7 @@ import type {
   RulePausedPayload,
   Settings,
   TestRow,
+  UpdateInstallKind,
   Uuid,
   ValidationResult,
 } from "./types";
@@ -40,6 +41,14 @@ export const exportRules = (path: string): Promise<void> => invoke("export_rules
 export const importRules = (path: string, mode: ImportMode): Promise<Rule[]> =>
   invoke("import_rules", { path, mode });
 export const getLogPath = (): Promise<string> => invoke("get_log_path");
+export const prepareForUpdate = (): Promise<void> => invoke("prepare_for_update");
+export const resumeMonitorAfterUpdateError = (): Promise<void> =>
+  invoke("resume_monitor_after_update_error");
+export const getUpdateInstallKind = (): Promise<UpdateInstallKind> =>
+  invoke("update_install_kind");
+export const logUpdateError = (message: string): Promise<void> =>
+  invoke("log_update_error", { message });
+export const showUpdateWindow = (): Promise<void> => invoke("show_update_window");
 
 export const onFileProcessed = (
   handler: (payload: FileProcessedPayload) => void,
@@ -52,3 +61,6 @@ export const onRuleError = (
 export const onRulePaused = (
   handler: (payload: RulePausedPayload) => void,
 ): Promise<UnlistenFn> => listen<RulePausedPayload>("rule-paused", ({ payload }) => handler(payload));
+
+export const onNavigateHistory = (handler: () => void): Promise<UnlistenFn> =>
+  listen("navigate-history", handler);

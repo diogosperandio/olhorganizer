@@ -1,6 +1,6 @@
 # Olhorganizer
 
-Olhorganizer is a desktop app for non-technical users that watches folders and moves or copies new files into destination folders built from markers such as `{YYYY}/{MM}`. Example: `NEWS/20261022.pdf -> D:\Jornais\2026\10\20261022.pdf`. The stack is Rust, Tauri 2, Svelte, TypeScript, and Vite; targets are Windows 10/11 and Linux (Ubuntu/Zorin/Mint and Fedora), and the identifier is `com.diogosperandio.olhorganizer-codex`.
+Olhorganizer is a desktop app for non-technical users that watches folders and moves or copies new files into destination folders built from markers such as `{YYYY}/{MM}`. Example: `NEWS/20261022.pdf -> D:\Jornais\2026\10\20261022.pdf`. The stack is Rust, Tauri 2, Svelte, TypeScript, and Vite; targets are Windows 10/11 and Linux (Ubuntu/Zorin/Mint and Fedora), and the identifier is `com.diogosperandio.olhorganizer`.
 
 ## Architecture
 
@@ -35,6 +35,7 @@ Olhorganizer is a desktop app for non-technical users that watches folders and m
 - Do not use `unwrap()` outside tests.
 - User-facing text is Brazilian Portuguese; code and comments are English.
 - Rust DTOs exposed by Tauri and the hand-written interfaces in `src/lib/types.ts` must remain in sync.
+- Linux builds with tray support require the `libayatana-appindicator` development package (package name varies by distribution).
 
 ## Safety
 
@@ -64,7 +65,7 @@ cargo fmt --all
 - [x] Step 6 — Application service integration
 - [x] Step 7 — Rule editor UI
 - [x] Step 8 — Activity and notifications
-- [ ] Step 9 — Tray and startup integration
-- [ ] Step 10 — Updates and packaging
+- [x] Step 9 — Tray and startup integration
+- [x] Step 10 — Updates and packaging
 - [ ] Step 11 — Platform validation
 - [ ] Step 12 — Release readiness

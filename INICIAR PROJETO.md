@@ -96,7 +96,7 @@ Respostas do assistente:
 | Pergunta | Resposta |
 | --- | --- |
 | Project name | `Olhorganizer` |
-| Identifier | `com.diogosperandio.olhorganizer` (sem ponto no início) |
+| Identifier | `com.diogosperandio.olhorganizer-codex` (sem ponto no início) |
 | Frontend language | `TypeScript / JavaScript` |
 | Package manager | `npm` |
 | UI template | `Svelte` |
@@ -130,7 +130,7 @@ codium .
 Em `src-tauri/tauri.conf.json`, confira a linha:
 
 ```json
-"identifier": "com.diogosperandio.olhorganizer",
+"identifier": "com.diogosperandio.olhorganizer-codex",
 ```
 
 ---

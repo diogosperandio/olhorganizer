@@ -20,6 +20,7 @@ use tracing_subscriber::util::SubscriberInitExt;
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let result = tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             setup_app(app).map_err(std::io::Error::other)?;
             Ok(())

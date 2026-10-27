@@ -1,6 +1,6 @@
 # Olhorganizer
 
-Olhorganizer is a desktop app for non-technical users that watches folders and moves or copies new files into destination folders built from markers such as `{YYYY}/{MM}`. Example: `NEWS/20261022.pdf -> D:\Jornais\2026\10\20261022.pdf`. The stack is Rust, Tauri 2, Svelte, TypeScript, and Vite; targets are Windows 10/11 and Linux (Ubuntu/Zorin/Mint and Fedora), and the identifier is `com.diogosperandio.olhorganizer`.
+Olhorganizer is a desktop app for non-technical users that watches folders and moves or copies new files into destination folders built from markers such as `{YYYY}/{MM}`. Example: `NEWS/20261022.pdf -> D:\Jornais\2026\10\20261022.pdf`. The stack is Rust, Tauri 2, Svelte, TypeScript, and Vite; targets are Windows 10/11 and Linux (Ubuntu/Zorin/Mint and Fedora), and the identifier is `com.diogosperandio.olhorganizer-codex`.
 
 ## Architecture
 

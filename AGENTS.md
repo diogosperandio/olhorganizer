@@ -4,7 +4,7 @@ and moves or copies new files into destination folders built from markers such a
 {YYYY}/{MM}. Example: NEWS/20261022.pdf -> D:\Jornais\2026\10\20261022.pdf.
 Stack: Rust + Tauri 2, frontend Svelte + TypeScript + Vite (created with
 create-tauri-app). Targets: Windows 10/11 and Linux (Ubuntu/Zorin/Mint, Fedora).
-Identifier: com.diogosperandio.olhorganizer.
+Identifier: com.diogosperandio.olhorganizer-codex.
 Cargo workspace: crates/motor (pure engine library), src-tauri (Tauri app), src/ (UI).
 
 # Goal

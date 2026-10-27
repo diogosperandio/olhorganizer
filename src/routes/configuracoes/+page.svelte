@@ -1,6 +1,5 @@
 <script lang="ts">
-  import Placeholder from "$lib/components/Placeholder.svelte";
-  import { t } from "$lib/i18n";
+  import SettingsView from "$lib/components/SettingsView.svelte";
 </script>
 
-<Placeholder title={t("nav.settings")} message={t("placeholder.settings")} />
+<SettingsView />

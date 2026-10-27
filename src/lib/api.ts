@@ -3,11 +3,15 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { open } from "@tauri-apps/plugin-dialog";
+import { getVersion } from "@tauri-apps/api/app";
+import { open, save } from "@tauri-apps/plugin-dialog";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import type {
   FileProcessed,
   FilterTemplate,
   HistoryEntry,
+  ImportMode,
+  ImportSummary,
   MarkerDef,
   Rule,
   RuleNotice,
@@ -71,6 +75,43 @@ export const getRuleStatuses = () => invoke<RuleStatus[]>("get_rule_statuses");
 
 /** Restarts a rule paused by the loop protection. */
 export const resumeRule = (id: Uuid) => invoke<void>("resume_rule", { id });
+
+/** Writes all rules to a JSON file; resolves to how many were exported. */
+export const exportRules = (path: string) => invoke<number>("export_rules", { path });
+
+/** Checks a rules file without changing anything. */
+export const inspectImport = (path: string) => invoke<ImportSummary>("inspect_import", { path });
+
+/** Imports a checked rules file; resolves to warnings about rule chains. */
+export const importRules = (path: string, mode: ImportMode) =>
+  invoke<string[]>("import_rules", { path, mode });
+
+/** Opens a folder (or the folder holding a file) in the system file manager. */
+export const openFolder = (path: string) => invoke<void>("open_folder", { path });
+
+/** Opens the newest log file. */
+export const openLog = () => invoke<void>("open_log");
+
+/** Native "save as" picker for a JSON file. Null when cancelled. */
+export async function pickSaveJson(title: string, defaultPath: string): Promise<string | null> {
+  return save({ title, defaultPath, filters: [{ name: "JSON", extensions: ["json"] }] });
+}
+
+/** Native picker for one JSON file. Null when cancelled. */
+export async function pickJsonFile(title: string): Promise<string | null> {
+  const chosen = await open({
+    title,
+    multiple: false,
+    directory: false,
+    filters: [{ name: "JSON", extensions: ["json"] }],
+  });
+  return typeof chosen === "string" ? chosen : null;
+}
+
+export const appVersion = () => getVersion();
+
+/** Opens a web page in the default browser. */
+export const openWebPage = (url: string) => openUrl(url);
 
 export const getSettings = () => invoke<Settings>("get_settings");
 

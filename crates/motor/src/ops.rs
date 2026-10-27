@@ -192,7 +192,7 @@ fn run(fs: &impl FileSystem, file: &Path, rule: &Rule, dry_run: bool) -> Result<
     }
 
     fs.create_dir_all(&dir)
-        .map_err(|e| failed("Não foi possível criar a pasta de destino", e))?;
+        .map_err(|e| unreachable_destination(rule, &e))?;
 
     match rule.action {
         Action::Copy => {
@@ -338,8 +338,46 @@ fn skipped(reason: &str) -> Outcome {
 
 fn failed(context: impl Display, error: io::Error) -> Outcome {
     Outcome::Failed {
-        error: format!("{context}: {error}."),
+        error: format!("{context}: {}.", explain(&error)),
     }
+}
+
+/// "A pasta D:\Jornais não está acessível. O disco está conectado?"
+fn unreachable_destination(rule: &Rule, error: &io::Error) -> Outcome {
+    let base = rule.destination_prefix().display().to_string();
+    let base = base.trim_end_matches(['/', '\\']);
+    let base = if base.is_empty() { "/" } else { base };
+    let error = if error.kind() == io::ErrorKind::NotFound {
+        format!("A pasta {base} não está acessível. O disco está conectado?")
+    } else {
+        format!("A pasta {base} não está acessível: {}.", explain(error))
+    };
+    Outcome::Failed { error }
+}
+
+/// Why an operation failed, in words a non-technical user understands.
+fn explain(error: &io::Error) -> String {
+    use io::ErrorKind as K;
+    // Windows: ERROR_SHARING_VIOLATION / ERROR_LOCK_VIOLATION.
+    let locked = cfg!(windows) && matches!(error.raw_os_error(), Some(32 | 33));
+    let reason = match error.kind() {
+        _ if locked => "o arquivo está sendo usado por outro programa",
+        K::NotFound => "o caminho não foi encontrado (o disco está conectado?)",
+        K::PermissionDenied => "o Olhorganizer não tem permissão para usar esse local",
+        K::StorageFull => "o disco está cheio",
+        K::ReadOnlyFilesystem => "o disco está protegido contra gravação",
+        K::ResourceBusy => "o arquivo está sendo usado por outro programa",
+        K::InvalidFilename => "o nome do arquivo não é aceito nesse disco",
+        K::FileTooLarge => "o arquivo é grande demais para esse disco",
+        K::TimedOut
+        | K::NetworkDown
+        | K::NetworkUnreachable
+        | K::HostUnreachable
+        | K::ConnectionReset
+        | K::ConnectionAborted => "a pasta de rede não respondeu",
+        _ => return format!("erro do sistema ({error})"),
+    };
+    reason.to_owned()
 }
 
 #[cfg(test)]
@@ -709,6 +747,8 @@ mod tests {
         short_copy: bool,
         /// `copy_synced` fails.
         copy_fails: bool,
+        /// `create_dir_all` fails with this kind.
+        create_dir_fails: Option<io::ErrorKind>,
         copies: Cell<u32>,
     }
 
@@ -729,7 +769,10 @@ mod tests {
             StdFs.list_dir(path)
         }
         fn create_dir_all(&self, path: &Path) -> io::Result<()> {
-            StdFs.create_dir_all(path)
+            match self.create_dir_fails {
+                Some(kind) => Err(kind.into()),
+                None => StdFs.create_dir_all(path),
+            }
         }
         fn rename(&self, from: &Path, to: &Path) -> io::Result<()> {
             if self.cross_device_from.as_deref() == Some(from) {
@@ -806,5 +849,36 @@ mod tests {
             let dir = env.dst.join("2026/10");
             assert_eq!(StdFs.list_dir(&dir).unwrap(), Vec::<PathBuf>::new());
         }
+    }
+
+    #[test]
+    fn errors_are_explained_in_portuguese() {
+        let env = env();
+        let file = put(&env.src, "20261022.pdf", "jornal");
+        let r = rule(&env, Action::Move, ConflictPolicy::Rename);
+        let base = env.dst.display();
+
+        let unplugged = Faulty {
+            create_dir_fails: Some(io::ErrorKind::NotFound),
+            ..Faulty::default()
+        };
+        assert_eq!(
+            process_with(&unplugged, &file, &r, false),
+            Outcome::Failed {
+                error: format!("A pasta {base} não está acessível. O disco está conectado?")
+            }
+        );
+
+        let full = Faulty {
+            cross_device_from: Some(file.clone()),
+            copy_fails: true,
+            ..Faulty::default()
+        };
+        let outcome = process_with(&full, &file, &r, false);
+        assert!(
+            matches!(&outcome, Outcome::Failed { error } if error.starts_with("Não foi possível copiar o arquivo: ")),
+            "{outcome:?}"
+        );
+        assert!(file.exists());
     }
 }

@@ -147,6 +147,22 @@ pub struct TestRow {
     pub outcome: Outcome,
 }
 
+/// What a rules file holds, checked before asking how to import it.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportSummary {
+    pub rule_names: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ImportMode {
+    /// The file's rules take the place of all current rules.
+    Replace,
+    /// The file's rules join the current ones (same id = updated).
+    Add,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MarkerDto {

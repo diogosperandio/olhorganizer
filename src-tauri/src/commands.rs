@@ -2,18 +2,20 @@
 //! motor and monitor. Errors are pt-BR messages ready to show.
 
 use std::collections::HashSet;
-use std::path::PathBuf;
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use motor::{
     Config, FileMeta, Rule, RuleProblem, Uuid, build_destination, compile, filter_templates,
     list_markers as motor_markers,
 };
-use tauri::State;
+use tauri::{AppHandle, Manager, State};
+use tauri_plugin_opener::OpenerExt;
 
 use crate::dto::{
-    FieldMessage, FilterTemplateDto, MarkerDto, RuleDto, RuleField, SaveRuleResult, SettingsDto,
-    TestRow, ValidationResult,
+    FieldMessage, FilterTemplateDto, ImportMode, ImportSummary, MarkerDto, RuleDto, RuleField,
+    SaveRuleResult, SettingsDto, TestRow, ValidationResult,
 };
 use crate::events::HistoryEntry;
 use crate::state::AppState;
@@ -309,4 +311,91 @@ pub fn save_settings(state: State<'_, AppState>, settings: SettingsDto) -> CmdRe
     candidate.settings = settings.into();
     state.commit(&mut config, candidate)?;
     Ok(SettingsDto::from(&config.settings))
+}
+
+/// Writes every rule (not the settings) to a JSON file another installation
+/// can import.
+#[tauri::command]
+pub fn export_rules(state: State<'_, AppState>, path: PathBuf) -> CmdResult<usize> {
+    let exported = Config {
+        rules: state.config().rules.clone(),
+        ..Config::default()
+    };
+    exported.save(&path).map_err(|e| e.to_string())?;
+    Ok(exported.rules.len())
+}
+
+/// Checks a rules file (readable, valid rules, no cycles among them) without
+/// changing anything, so the UI can ask how to import it.
+#[tauri::command]
+pub fn inspect_import(path: PathBuf) -> CmdResult<ImportSummary> {
+    let mut probe = Config::default();
+    probe.import(&path).map_err(|e| e.to_string())?;
+    if probe.rules.is_empty() {
+        return Err("O arquivo não tem nenhuma regra.".to_owned());
+    }
+    Ok(ImportSummary {
+        rule_names: probe.rules.into_iter().map(|r| r.name).collect(),
+    })
+}
+
+/// Imports a rules file, replacing or joining the current rules. Nothing
+/// changes if the file is invalid or the result has a cycle between rules.
+#[tauri::command]
+pub fn import_rules(
+    state: State<'_, AppState>,
+    path: PathBuf,
+    mode: ImportMode,
+) -> CmdResult<Vec<String>> {
+    let mut config = state.config();
+    let mut candidate = match mode {
+        ImportMode::Replace => Config {
+            rules: Vec::new(),
+            ..config.clone()
+        },
+        ImportMode::Add => config.clone(),
+    };
+    let warnings = candidate.import(&path).map_err(|e| e.to_string())?;
+    state.commit(&mut config, candidate)?;
+    Ok(warnings.into_iter().map(|w| w.message_pt).collect())
+}
+
+/// Opens a folder in the system file manager. Given a file, opens the
+/// folder that contains it.
+#[tauri::command]
+pub fn open_folder(app: AppHandle, path: PathBuf) -> CmdResult<()> {
+    let dir = if path.is_dir() {
+        path
+    } else {
+        path.parent().map(Path::to_path_buf).unwrap_or(path)
+    };
+    if !dir.is_dir() {
+        return Err(format!(
+            "A pasta {} não existe mais ou não está acessível.",
+            dir.display()
+        ));
+    }
+    app.opener()
+        .open_path(dir.to_string_lossy(), None::<&str>)
+        .map_err(|e| format!("Não foi possível abrir a pasta {}: {e}", dir.display()))
+}
+
+/// Opens the newest log file (or the log folder if there is none yet).
+#[tauri::command]
+pub fn open_log(app: AppHandle) -> CmdResult<()> {
+    let dir = app
+        .path()
+        .app_log_dir()
+        .map_err(|e| format!("Não foi possível achar a pasta de registros: {e}"))?;
+    let newest = fs::read_dir(&dir)
+        .map_err(|e| format!("Não foi possível abrir a pasta {}: {e}", dir.display()))?
+        .filter_map(Result::ok)
+        .filter(|e| e.path().extension().is_some_and(|ext| ext == "log"))
+        .filter_map(|e| Some((e.metadata().ok()?.modified().ok()?, e.path())))
+        .max_by_key(|(modified, _)| *modified)
+        .map(|(_, path)| path);
+    let target = newest.unwrap_or(dir);
+    app.opener()
+        .open_path(target.to_string_lossy(), None::<&str>)
+        .map_err(|e| format!("Não foi possível abrir {}: {e}", target.display()))
 }

@@ -126,6 +126,14 @@ export interface RuleStatus {
   lastAt: number | null;
 }
 
+/** What a rules file holds (checked before importing). */
+export interface ImportSummary {
+  ruleNames: string[];
+}
+
+/** "replace": the file's rules take the place of all rules; "add": they join them. */
+export type ImportMode = "replace" | "add";
+
 export type HistoryEntry =
   | ({ type: "file-processed" } & FileProcessed)
   | ({ type: "rule-error" } & RuleNotice)

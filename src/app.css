@@ -27,6 +27,8 @@
   --warn: #b97f00;
   --danger: #c4302b;
   --off: #8a93a3;
+  --ok-bg: #e2f4e9;
+  --ok-text: #14532d;
   --warn-bg: #fff4d6;
   --warn-text: #5c4100;
   --danger-bg: #fde8e7;
@@ -61,6 +63,8 @@
     --warn: #e8b33a;
     --danger: #f06a64;
     --off: #6d7686;
+    --ok-bg: #173a26;
+    --ok-text: #a9e8c2;
     --warn-bg: #3a2f12;
     --warn-text: #f6dc9c;
     --danger-bg: #3d1d1c;

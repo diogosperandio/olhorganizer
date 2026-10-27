@@ -37,7 +37,8 @@ Cargo workspace (root `Cargo.toml`; build output and `[profile.release]` live at
   and motor's enums by hand: change both sides together.** Every UI text lives
   in `src/lib/i18n/pt-BR.ts` (use `t(key)`); components in `src/lib/components/`
   (rule wizard in `wizard/`, filter/destination helpers in `src/lib/rule-draft.ts`).
-  Plugin: dialog, folder picker only (`dialog:allow-open`).
+  Plugins: dialog (open/save pickers) and opener (web links only from the UI;
+  folders and the log are opened by the `open_folder`/`open_log` commands).
 
 ## Markers
 
@@ -142,7 +143,7 @@ must stay valid, or `cargo test -p motor` fails.
 - [x] 5. Tauri wiring: state, commands, events, history, logging (debug page)
 - [x] 6. Main screen: rule cards (status, switch, menu, reorder, live updates)
 - [x] 7. Rule wizard (create/edit, live preview, validation, test before saving)
-- [ ] 8. (title TBD)
+- [x] 8. Histórico and Configurações screens, export/import of rules
 - [ ] 9. (title TBD)
 - [ ] 10. (title TBD)
 - [ ] 11. (title TBD)

@@ -23,6 +23,7 @@ struct LogGuard(#[allow(dead_code)] WorkerGuard);
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let result = tauri::Builder::default()
+        .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .setup(setup)
         .invoke_handler(tauri::generate_handler![
@@ -41,6 +42,11 @@ pub fn run() {
             commands::get_history,
             commands::get_rule_statuses,
             commands::resume_rule,
+            commands::export_rules,
+            commands::inspect_import,
+            commands::import_rules,
+            commands::open_folder,
+            commands::open_log,
             commands::get_settings,
             commands::save_settings,
         ])

@@ -290,12 +290,12 @@ fn destination_exists<F: FileSystem + ?Sized>(fs: &F, path: &Path) -> io::Result
         if !fs.exists(parent)? {
             return Ok(false);
         }
-        return Ok(fs.read_dir(parent)?.iter().any(|candidate| {
+        Ok(fs.read_dir(parent)?.iter().any(|candidate| {
             candidate
                 .file_name()
                 .and_then(|name| name.to_str())
                 .is_some_and(|name| name.eq_ignore_ascii_case(wanted_name))
-        }));
+        }))
     }
 
     #[cfg(not(windows))]
@@ -366,14 +366,14 @@ fn path_is_inside(path: &Path, directory: &Path) -> bool {
     #[cfg(windows)]
     {
         let mut path_components = path.components();
-        return directory.components().all(|directory_component| {
+        directory.components().all(|directory_component| {
             path_components.next().is_some_and(|path_component| {
                 path_component
                     .as_os_str()
                     .to_string_lossy()
                     .eq_ignore_ascii_case(&directory_component.as_os_str().to_string_lossy())
             })
-        });
+        })
     }
 
     #[cfg(not(windows))]

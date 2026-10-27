@@ -144,4 +144,8 @@ export const ptBR = {
   loadingOptions: "Carregando opções…",
   previewArrow: "vai para",
   selectedTypesHelp: "Marque um ou mais tipos, ou deixe todos desmarcados para aceitar qualquer arquivo.",
+  validationSourceNeedle: "pasta monitorada",
+  validationDestinationNeedle: "destino",
+  validationSubfoldersNeedle: "subpastas",
+  validationIntervalNeedle: "intervalo",
 } as const;

@@ -25,9 +25,9 @@ export function typesFromFilter(filter: string): string[] {
 
 export function filterWithTypes(filter: string, types: string[]): string {
   const base = filter.replace(/\.(?:\{[^}]*\}|[a-zA-Z0-9]+|\*)$/, "");
-  const extensions = types.flatMap((type) => type === "jpg" ? ["jpg", "jpeg"] : [type]);
+  const extensions = types;
   if (extensions.length === 0) return base || "*";
-  return `${base || "*"}.${extensions.length === 1 ? extensions[0] : `{${extensions.join(",")}`}`;
+  return `${base || "*"}.${extensions.length === 1 ? extensions[0] : `{${extensions.join(",")}}`}`;
 }
 
 export function customMarkersFromFilter(filter: string): CustomMarker[] {

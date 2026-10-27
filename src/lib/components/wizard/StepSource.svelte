@@ -2,7 +2,7 @@
   import { open } from "@tauri-apps/plugin-dialog";
   import { ptBR } from "$lib/i18n/pt-BR";
   import type { FilterTemplate, Rule } from "$lib/types";
-  import { fileNameFromPath, filterWithTypes, folderNameFromPath, knownFileTypes, type CustomMarker, type CustomMarkerKind, typesFromFilter } from "./types";
+  import { customMarkersFromFilter, fileNameFromPath, filterWithTypes, folderNameFromPath, knownFileTypes, type CustomMarker, type CustomMarkerKind, typesFromFilter } from "./types";
 
   let { draft = $bindable(), templates, customMarkers = $bindable(), sampleFile = $bindable(), selectedTypes = $bindable(), selectedTemplate = $bindable(), errors, editing }: {
     draft: Rule; templates: FilterTemplate[]; customMarkers: CustomMarker[]; sampleFile: string;
@@ -16,7 +16,7 @@
   let markerName = $state("");
   let markerKind = $state<CustomMarkerKind>("TEXTO");
   let markerError = $state("");
-  let sampleInput: HTMLInputElement;
+  let sampleInput = $state<HTMLInputElement>();
 
   async function chooseSource() {
     const selected = await open({ directory: true, multiple: false, defaultPath: draft.sourceDir || undefined });
@@ -55,15 +55,18 @@
   }
 
   function updateSelection() {
-    selectionStart = sampleInput.selectionStart ?? 0;
-    selectionEnd = sampleInput.selectionEnd ?? 0;
+    selectionStart = sampleInput?.selectionStart ?? 0;
+    selectionEnd = sampleInput?.selectionEnd ?? 0;
     selectedText = sampleFile.slice(selectionStart, selectionEnd);
     if (/^\d+$/.test(selectedText)) markerKind = "NUM";
   }
 
   function structure(value: string): string {
-    if (/^\d{8}$/.test(value)) return "{YYYY}{MM}{DD}";
-    return value.replace(/[\p{L}\p{N}]+/gu, "*").replace(/\*+/g, "*");
+    return value
+      .replace(/\d{8}/g, "\uE000")
+      .replace(/[\p{L}\p{N}]+/gu, "*")
+      .replace(/\*+/g, "*")
+      .replace(/\uE000/g, "{YYYY}{MM}{DD}");
   }
 
   function addCustomMarker() {
@@ -116,9 +119,9 @@
     {/if}
   </details>
 
-  <label class="switch-row"><button type="button" role="switch" aria-checked={draft.includeSubfolders} class:on={draft.includeSubfolders} onclick={() => (draft.includeSubfolders = !draft.includeSubfolders)}><span></span></button><span><strong>{ptBR.includeSubfoldersLabel}</strong><small>{ptBR.includeSubfoldersHelp}</small></span></label>
+  <label class="switch-row"><button type="button" role="switch" aria-label={ptBR.includeSubfoldersLabel} aria-checked={draft.includeSubfolders} class:on={draft.includeSubfolders} onclick={() => (draft.includeSubfolders = !draft.includeSubfolders)}><span></span></button><span><strong>{ptBR.includeSubfoldersLabel}</strong><small>{ptBR.includeSubfoldersHelp}</small></span></label>
 
-  <details class="advanced"><summary>{ptBR.advancedUsers}</summary><label class="field"><span>{ptBR.rawFilter}</span><input class="code-input" bind:value={draft.filter} oninput={() => { selectedTemplate = ""; selectedTypes = typesFromFilter(draft.filter); }} /></label></details>
+  <details class="advanced"><summary>{ptBR.advancedUsers}</summary><label class="field"><span>{ptBR.rawFilter}</span><input class="code-input" bind:value={draft.filter} oninput={() => { selectedTemplate = ""; selectedTypes = typesFromFilter(draft.filter); customMarkers = customMarkersFromFilter(draft.filter); }} /></label></details>
 </div>
 
 <style>

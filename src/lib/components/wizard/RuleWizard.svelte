@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onMount, untrack } from "svelte";
   import { listFilterTemplates, listMarkers, previewDestination, saveRule, testRule, toggleRule, validateRule } from "$lib/api";
   import { ptBR } from "$lib/i18n/pt-BR";
   import type { FilterTemplate, MarkerDef, Rule, TestRow, ValidationResult } from "$lib/types";
@@ -13,17 +13,18 @@
     rule?: Rule; nextPriority: number; onClose: () => void; onSaved: (rule: Rule, message: string) => void;
   } = $props();
 
-  const editing = Boolean(rule);
-  let draft = $state<Rule>(rule ? structuredClone(rule) : {
+  const initialDraft = untrack((): Rule => rule ? structuredClone(rule) : ({
     id: crypto.randomUUID(), name: "", enabled: true, sourceDir: "", filter: "*", destination: "",
     action: "move", dateSource: "modified", checkMode: "instant", includeSubfolders: false,
     onConflict: "rename", priority: nextPriority,
-  });
+  }));
+  const editing = untrack(() => Boolean(rule));
+  let draft = $state<Rule>(initialDraft);
   let templates = $state<FilterTemplate[]>([]);
   let markers = $state<MarkerDef[]>([]);
-  let customMarkers = $state<CustomMarker[]>(customMarkersFromFilter(draft.filter));
-  let selectedTypes = $state<string[]>(typesFromFilter(draft.filter));
-  let selectedTemplate = $state(draft.filter);
+  let customMarkers = $state<CustomMarker[]>(customMarkersFromFilter(initialDraft.filter));
+  let selectedTypes = $state<string[]>(typesFromFilter(initialDraft.filter));
+  let selectedTemplate = $state(initialDraft.filter);
   let sampleFile = $state("20261022.pdf");
   let validation = $state<ValidationResult>({ errors: [], warnings: [] });
   let validationBusy = $state(false);
@@ -45,8 +46,8 @@
   const basicValid = $derived(Boolean(draft.name.trim() && draft.sourceDir && draft.destination && draft.filter));
   const canSave = $derived(basicValid && validation.errors.length === 0 && hasTested && !testing && !saving && !validationBusy);
 
-  function isSourceError(error: string) { return error.includes("pasta monitorada") && !error.includes("destino") && !error.includes("subpastas"); }
-  function isIntervalError(error: string) { return error.toLocaleLowerCase("pt-BR").includes("intervalo"); }
+  function isSourceError(error: string) { return error.includes(ptBR.validationSourceNeedle) && !error.includes(ptBR.validationDestinationNeedle) && !error.includes(ptBR.validationSubfoldersNeedle); }
+  function isIntervalError(error: string) { return error.toLocaleLowerCase("pt-BR").includes(ptBR.validationIntervalNeedle); }
 
   async function loadOptions() {
     try {
@@ -89,10 +90,14 @@
     if (result.errors.length || !hasTested) return;
     saving = true;
     try {
+      const changedFromSaved = !rule || JSON.stringify(initialDraft) !== JSON.stringify(draft);
       let saved = await saveRule(structuredClone(draft));
       if (processNow) {
-        if (saved.enabled) await toggleRule(saved.id, false);
-        saved = await toggleRule(saved.id, true);
+        if (!saved.enabled) saved = await toggleRule(saved.id, true);
+        else if (editing && !changedFromSaved) {
+          await toggleRule(saved.id, false);
+          saved = await toggleRule(saved.id, true);
+        }
       }
       onSaved(saved, processNow ? ptBR.savedAndProcessing : ptBR.savedRule);
     } catch (error) {

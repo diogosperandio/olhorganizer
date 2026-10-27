@@ -4,6 +4,7 @@
   import ConfirmDialog from "$lib/components/ConfirmDialog.svelte";
   import EmptyState from "$lib/components/EmptyState.svelte";
   import RuleList from "$lib/components/RuleList.svelte";
+  import RuleWizard from "$lib/components/wizard/RuleWizard.svelte";
   import type { CardAction, RuleActivity } from "$lib/components/RuleCard.svelte";
   import { ptBR } from "$lib/i18n/pt-BR";
   import type { AppEvent, FileProcessedPayload, HistoryEntry, Rule } from "$lib/types";
@@ -15,12 +16,19 @@
   let loadFailed = $state(false);
   let notice = $state("");
   let deleteCandidate = $state<Rule | null>(null);
+  let wizardOpen = $state(false);
+  let wizardRule = $state<Rule | undefined>(undefined);
   const sortedRules = $derived([...rules].sort((a, b) => a.priority - b.priority));
 
   function setBusy(id: string, busy: boolean) {
     const next = new Set(busyIds); if (busy) next.add(id); else next.delete(id); busyIds = next;
   }
   function showNotice(message: string) { notice = message; }
+  function openWizard(rule?: Rule) { wizardRule = rule; wizardOpen = true; }
+  function wizardSaved(saved: Rule, message: string) {
+    rules = rules.some((rule) => rule.id === saved.id) ? rules.map((rule) => rule.id === saved.id ? saved : rule) : [...rules, saved];
+    wizardOpen = false; wizardRule = undefined; showNotice(message);
+  }
   function applyFileProcessed(payload: FileProcessedPayload, timestamp = Date.now()) {
     if (payload.outcome.kind === "notMatched") return;
     const failed = payload.outcome.kind === "failed";
@@ -76,7 +84,7 @@
     if (action === "delete") deleteCandidate = rule;
     else if (action === "test") void runTest(rule);
     else if (action === "duplicate") void duplicateRule(rule);
-    else showNotice(ptBR.placeholderEditor);
+    else openWizard(rule);
   }
   async function confirmDelete() {
     const rule = deleteCandidate; deleteCandidate = null; if (!rule) return; setBusy(rule.id, true);
@@ -106,15 +114,16 @@
 </div></header>
 
 <main>
-  <section class="intro"><div><h1>{ptBR.rulesHeading}</h1><p>{ptBR.rulesSummary}</p></div><button class="primary" type="button" onclick={() => showNotice(ptBR.placeholderEditor)}>{ptBR.newRule}</button></section>
+  <section class="intro"><div><h1>{ptBR.rulesHeading}</h1><p>{ptBR.rulesSummary}</p></div><button class="primary" type="button" onclick={() => openWizard()}>{ptBR.newRule}</button></section>
   {#if loading}<div class="state-message" aria-live="polite">{ptBR.loadingRules}</div>
   {:else if loadFailed}<div class="state-message error"><p>{ptBR.loadError}</p><button type="button" onclick={load}>{ptBR.tryAgain}</button></div>
-  {:else if sortedRules.length === 0}<EmptyState onNew={() => showNotice(ptBR.placeholderEditor)} />
+  {:else if sortedRules.length === 0}<EmptyState onNew={() => openWizard()} />
   {:else}<RuleList rules={sortedRules} {activities} {busyIds} onToggle={changeEnabled} onResume={resumeRule} onAction={handleAction} onReorder={reorder} />{/if}
 </main>
 
 {#if notice}<div class="toast" role="status"><span>{notice}</span><button type="button" aria-label={ptBR.closeMessage} onclick={() => (notice = "")}>×</button></div>{/if}
 {#if deleteCandidate}<ConfirmDialog title={ptBR.confirmDelete} message={`${ptBR.deleteConfirmPrefix}${deleteCandidate.name}${ptBR.deleteConfirmSuffix}`} onConfirm={confirmDelete} onCancel={() => (deleteCandidate = null)} />{/if}
+{#if wizardOpen}<RuleWizard rule={wizardRule} nextPriority={Math.max(-1, ...rules.map((rule) => rule.priority)) + 1} onClose={() => { wizardOpen = false; wizardRule = undefined; }} onSaved={wizardSaved} />{/if}
 
 <style>
   :global(*) { box-sizing: border-box; }

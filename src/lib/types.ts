@@ -54,9 +54,19 @@ export interface TestRow {
   outcome: Outcome;
 }
 
+/** The editor field a validation message belongs to. */
+export type RuleField = "name" | "sourceDir" | "filter" | "destination" | "dateSource" | "checkMode";
+
+export interface FieldMessage {
+  field: RuleField;
+  message: string;
+}
+
 export interface ValidationResult {
-  errors: string[];
-  warnings: string[];
+  /** Block saving. */
+  errors: FieldMessage[];
+  /** Shown, but do not block saving. */
+  warnings: FieldMessage[];
 }
 
 export interface SaveRuleResult {
@@ -98,6 +108,22 @@ export interface RuleNotice {
   ruleId: Uuid;
   ruleName: string;
   messagePt: string;
+  /** Only on "rule-paused": paused by the loop protection; offer "Retomar". */
+  canResume: boolean;
+}
+
+export type RuleState = "ok" | "paused" | "error";
+
+/** Current state of a rule (src-tauri/src/status.rs). */
+export interface RuleStatus {
+  ruleId: Uuid;
+  state: RuleState;
+  messagePt: string | null;
+  canResume: boolean;
+  /** Last file moved or copied, relative to the source folder. */
+  lastFile: string | null;
+  /** Milliseconds since the Unix epoch. */
+  lastAt: number | null;
 }
 
 export type HistoryEntry =

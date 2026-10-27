@@ -29,11 +29,13 @@ Cargo workspace (root `Cargo.toml`; build output and `[profile.release]` live at
   motor/monitor; `Result<T, String>` with pt-BR messages), `dto.rs` (camelCase
   IPC shapes; config.json stays snake_case), `events.rs` (forwards
   `MonitorEvent`s as "file-processed", "rule-error", "rule-paused",
-  "rule-resumed", "rule-hint"), `history.rs` (last 500 events). Logs go to
+  "rule-resumed", "rule-hint"), `history.rs` (last 500 events), `status.rs`
+  (per-rule ok/paused/error + last file, for `get_rule_statuses`). Logs go to
   `app_log_dir()/olhorganizer.<date>.log`, daily, 14 kept (`RUST_LOG` overrides).
 - `src/` — UI only. The UI never touches files directly; it calls Tauri commands
   through `src/lib/api.ts`. **`src/lib/types.ts` mirrors `dto.rs`/`events.rs`
-  and motor's enums by hand: change both sides together.**
+  and motor's enums by hand: change both sides together.** Every UI text lives
+  in `src/lib/i18n/pt-BR.ts` (use `t(key)`); components in `src/lib/components/`.
 
 ## Markers
 
@@ -136,7 +138,7 @@ must stay valid, or `cargo test -p motor` fails.
 - [x] 4. Folder monitor (`crates/monitor`) and CLI
   - [x] 4b. Include subfolders per rule, rule-cycle check, circuit breaker
 - [x] 5. Tauri wiring: state, commands, events, history, logging (debug page)
-- [ ] 6. (title TBD)
+- [x] 6. Main screen: rule cards (status, switch, menu, reorder, live updates)
 - [ ] 7. UI: rule editor (adds the "Incluir subpastas" switch)
 - [ ] 8. (title TBD)
 - [ ] 9. (title TBD)

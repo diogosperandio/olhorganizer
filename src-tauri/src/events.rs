@@ -37,6 +37,9 @@ pub struct RuleNotice {
     pub rule_id: Uuid,
     pub rule_name: String,
     pub message_pt: String,
+    /// Only on "rule-paused": paused by the circuit breaker, so the UI offers
+    /// a "Retomar" button.
+    pub can_resume: bool,
 }
 
 /// One event as kept in the history; the tag is also the event name.
@@ -65,6 +68,13 @@ impl HistoryEntry {
             rule_id: event.rule_id(),
             rule_name: rule_name.clone(),
             message_pt: message_pt.clone(),
+            can_resume: matches!(
+                event,
+                MonitorEvent::RulePaused {
+                    by_breaker: true,
+                    ..
+                }
+            ),
         };
 
         match event {
@@ -137,6 +147,7 @@ pub fn spawn_forwarder(app: AppHandle, mut events: UnboundedReceiver<MonitorEven
         while let Some(event) = events.recv().await {
             let state = app.state::<AppState>();
             let entry = HistoryEntry::from_monitor(&event, &state.config());
+            state.statuses.apply(&entry);
             entry.log();
             state.history.push(entry.clone());
             if let Err(e) = entry.emit(&app) {

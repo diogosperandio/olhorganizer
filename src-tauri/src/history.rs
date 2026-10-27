@@ -46,6 +46,7 @@ mod tests {
             rule_id: Uuid::nil(),
             rule_name: "r".into(),
             message_pt: n.to_string(),
+            can_resume: false,
         })
     }
 

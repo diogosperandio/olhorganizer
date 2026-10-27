@@ -4,12 +4,12 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use crate::error::MotorError;
-use crate::filter::compile;
+use crate::filter::{compile, is_temporary};
 use crate::ops::{FileSystem, Outcome, StdFs, process_with};
 use crate::rule::{Rule, is_ignored_folder};
 
-/// Dry-runs `rule` on every file directly inside `dir` (not subfolders),
-/// sorted by name. `dir` replaces the rule's source folder, so a folder can be
+/// Dry-runs `rule` on every file in `dir` (and below it when the rule
+/// includes subfolders), sorted by relative path. `dir` replaces the rule's source folder, so a folder can be
 /// tested before the rule is saved. Nothing on disk is changed.
 pub fn test_rule(rule: &Rule, dir: &Path) -> Result<Vec<(String, Outcome)>, MotorError> {
     test_rule_with(&StdFs, rule, dir)
@@ -43,6 +43,27 @@ pub fn test_rule_with(
         .collect();
     results.sort_by(|a, b| a.0.cmp(&b.0));
     Ok(results)
+}
+
+/// Relative paths (see [`relative_label`]) of the files in `dir`, and below it
+/// when `recursive`, sorted, without temporary download names. The rule editor
+/// offers them as sample file names. Nothing on disk is changed.
+pub fn list_files(dir: &Path, recursive: bool) -> Result<Vec<String>, MotorError> {
+    let mut files = Vec::new();
+    collect_files(&StdFs, dir, recursive, &mut files).map_err(|source| MotorError::Io {
+        path: dir.to_path_buf(),
+        source,
+    })?;
+    let mut labels: Vec<String> = files
+        .iter()
+        .filter(|p| {
+            p.file_name()
+                .is_some_and(|n| !is_temporary(&n.to_string_lossy()))
+        })
+        .map(|p| relative_label(dir, p))
+        .collect();
+    labels.sort();
+    Ok(labels)
 }
 
 /// Files in `dir`, and below it when `recursive`, without following symlinked
@@ -193,6 +214,20 @@ mod tests {
             }
         );
         assert_eq!(snapshot(dir.path()), before);
+    }
+
+    #[test]
+    fn list_files_gives_sorted_relative_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("2025/fotos")).unwrap();
+        for name in ["b.pdf", "a.pdf", "c.pdf.part", "2025/fotos/IMG_0001.jpg"] {
+            fs::write(dir.path().join(name), "x").unwrap();
+        }
+        assert_eq!(list_files(dir.path(), false).unwrap(), ["a.pdf", "b.pdf"]);
+        assert_eq!(
+            list_files(dir.path(), true).unwrap(),
+            ["2025/fotos/IMG_0001.jpg", "a.pdf", "b.pdf"]
+        );
     }
 
     #[test]

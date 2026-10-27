@@ -110,11 +110,32 @@ pub struct SaveRuleResult {
     pub warnings: Vec<String>,
 }
 
+/// The editor field a validation message belongs to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum RuleField {
+    Name,
+    SourceDir,
+    Filter,
+    Destination,
+    DateSource,
+    CheckMode,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FieldMessage {
+    pub field: RuleField,
+    pub message: String,
+}
+
 #[derive(Debug, Clone, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ValidationResult {
-    pub errors: Vec<String>,
-    pub warnings: Vec<String>,
+    /// Block saving.
+    pub errors: Vec<FieldMessage>,
+    /// Shown, but do not block saving.
+    pub warnings: Vec<FieldMessage>,
 }
 
 /// One file of a "Testar regra" dry run.

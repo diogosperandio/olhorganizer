@@ -12,9 +12,11 @@
   "app": {
     "windows": [
       {
-        "title": "olhorganizer",
-        "width": 800,
-        "height": 600
+        "title": "Olhorganizer",
+        "width": 900,
+        "height": 600,
+        "minWidth": 640,
+        "minHeight": 480
       }
     ],
     "security": {

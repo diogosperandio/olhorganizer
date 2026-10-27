@@ -41,6 +41,8 @@ pub enum MonitorEvent {
     RulePaused {
         rule_id: Uuid,
         reason_pt: String,
+        /// Paused by the circuit breaker: stays paused until the user resumes it.
+        by_breaker: bool,
     },
     /// A paused rule found its folders again.
     RuleResumed {
@@ -373,6 +375,7 @@ async fn run_rule(rule: Rule, shared: Shared) {
                 shared.emit(MonitorEvent::RulePaused {
                     rule_id: rule.id,
                     reason_pt: BREAKER_MESSAGE.to_owned(),
+                    by_breaker: true,
                 });
                 return;
             }
@@ -382,6 +385,7 @@ async fn run_rule(rule: Rule, shared: Shared) {
                     shared.emit(MonitorEvent::RulePaused {
                         rule_id: rule.id,
                         reason_pt: format!("Regra pausada: {reason}"),
+                        by_breaker: false,
                     });
                 }
             }

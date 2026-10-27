@@ -2,6 +2,7 @@
 //! motor and monitor. Errors are pt-BR messages ready to show.
 
 use std::collections::HashSet;
+use std::path::PathBuf;
 use std::time::SystemTime;
 
 use motor::{
@@ -11,10 +12,12 @@ use motor::{
 use tauri::State;
 
 use crate::dto::{
-    FilterTemplateDto, MarkerDto, RuleDto, SaveRuleResult, SettingsDto, TestRow, ValidationResult,
+    FieldMessage, FilterTemplateDto, MarkerDto, RuleDto, RuleField, SaveRuleResult, SettingsDto,
+    TestRow, ValidationResult,
 };
 use crate::events::HistoryEntry;
 use crate::state::AppState;
+use crate::status::RuleStatus;
 
 type CmdResult<T> = Result<T, String>;
 
@@ -150,12 +153,26 @@ pub async fn test_rule(rule: RuleDto) -> CmdResult<Vec<TestRow>> {
 #[tauri::command]
 pub fn validate_rule(state: State<'_, AppState>, rule: RuleDto) -> CmdResult<ValidationResult> {
     let rule = rule.into_rule();
-    let mut result = ValidationResult {
-        errors: rule.validate().iter().map(ToString::to_string).collect(),
-        warnings: Vec::new(),
+    let message = |field, text: String| FieldMessage {
+        field,
+        message: text,
     };
+    let mut result = ValidationResult::default();
+    if rule.name.trim().is_empty() {
+        result.errors.push(message(
+            RuleField::Name,
+            "Dê um nome para a regra.".to_owned(),
+        ));
+    }
+    result.errors.extend(
+        rule.validate()
+            .iter()
+            .map(|p| message(problem_field(p), p.to_string())),
+    );
     if let Err(e) = compile(&rule.filter) {
-        result.errors.push(e.to_string());
+        result
+            .errors
+            .push(message(RuleField::Filter, e.to_string()));
     }
 
     let mut candidate = state.config().clone();
@@ -169,16 +186,56 @@ pub fn validate_rule(state: State<'_, AppState>, rule: RuleDto) -> CmdResult<Val
             .cycles
             .into_iter()
             .filter(|c| c.rule_ids.contains(&rule.id))
-            .map(|c| c.message_pt),
+            .map(|c| message(RuleField::Destination, c.message_pt)),
     );
     result.warnings.extend(
         report
             .warnings
             .into_iter()
             .filter(|w| w.rule_id == rule.id || w.other_rule_id == rule.id)
-            .map(|w| w.message_pt),
+            .map(|w| message(RuleField::Destination, w.message_pt)),
     );
     Ok(result)
+}
+
+fn problem_field(problem: &RuleProblem) -> RuleField {
+    match problem {
+        RuleProblem::SourceDirEmpty | RuleProblem::SourceDirNotAbsolute => RuleField::SourceDir,
+        RuleProblem::DestinationEmpty
+        | RuleProblem::DestinationNeedsFixedFolder
+        | RuleProblem::DestinationIsSource
+        | RuleProblem::DestinationInsideWatchedTree => RuleField::Destination,
+        RuleProblem::IntervalZero => RuleField::CheckMode,
+        RuleProblem::FilterHasNoDate => RuleField::DateSource,
+    }
+}
+
+/// Files in `dir` (and its subfolders if asked), as paths relative to it,
+/// for sample names in the editor. With `filter`, only matching files.
+#[tauri::command]
+pub async fn list_folder_files(
+    dir: PathBuf,
+    include_subfolders: bool,
+    filter: Option<String>,
+    limit: Option<usize>,
+) -> CmdResult<Vec<String>> {
+    if dir.as_os_str().is_empty() {
+        return Err(RuleProblem::SourceDirEmpty.to_string());
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        let filter = filter
+            .map(|f| compile(&f))
+            .transpose()
+            .map_err(|e| e.to_string())?;
+        let files = motor::plan::list_files(&dir, include_subfolders).map_err(|e| e.to_string())?;
+        Ok(files
+            .into_iter()
+            .filter(|label| filter.as_ref().is_none_or(|f| f.matches(label).is_some()))
+            .take(limit.unwrap_or(200))
+            .collect())
+    })
+    .await
+    .map_err(|e| format!("Falha interna ao ler a pasta: {e}"))?
 }
 
 /// Where a file with this name would go, e.g. "D:\Jornais\2026\10\20261022.pdf".
@@ -223,6 +280,21 @@ pub fn get_history(
     limit: Option<usize>,
 ) -> CmdResult<Vec<HistoryEntry>> {
     Ok(state.history.recent(limit.unwrap_or(100)))
+}
+
+/// Ok / paused / error and last processed file of every rule, in rule order.
+#[tauri::command]
+pub fn get_rule_statuses(state: State<'_, AppState>) -> CmdResult<Vec<RuleStatus>> {
+    let ids: Vec<Uuid> = state.config().rules.iter().map(|r| r.id).collect();
+    Ok(state.statuses.get(ids))
+}
+
+/// Restarts a rule the circuit breaker paused.
+#[tauri::command]
+pub fn resume_rule(state: State<'_, AppState>, id: Uuid) -> CmdResult<()> {
+    find(&state.config(), id)?;
+    state.resume(id);
+    Ok(())
 }
 
 #[tauri::command]

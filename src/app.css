@@ -1,0 +1,147 @@
+/* Calm, high-contrast theme. Light by default, dark via the system setting. */
+
+:root {
+  color-scheme: light dark;
+  --font: system-ui, -apple-system, "Segoe UI", Roboto, Ubuntu, Cantarell, "Noto Sans",
+    sans-serif;
+
+  --bg: #f4f6f9;
+  --surface: #ffffff;
+  --surface-raised: #ffffff;
+  --text: #1b2230;
+  --muted: #4f596b;
+  --border: #d5dae3;
+  --hover: #eef1f6;
+
+  --accent: #2860cc;
+  --accent-hover: #1f4fae;
+  --accent-text: #ffffff;
+  --focus: #2860cc;
+
+  --chip-bg: #e6edfb;
+  --chip-text: #1d4796;
+  --badge-bg: #edf0f4;
+  --badge-text: #333c4d;
+
+  --ok: #1e8c4c;
+  --warn: #b97f00;
+  --danger: #c4302b;
+  --off: #8a93a3;
+  --warn-bg: #fff4d6;
+  --warn-text: #5c4100;
+  --danger-bg: #fde8e7;
+  --danger-text: #7a1b17;
+
+  --radius: 12px;
+  --shadow: 0 1px 2px rgb(16 24 40 / 6%), 0 1px 3px rgb(16 24 40 / 8%);
+  --shadow-lifted: 0 8px 24px rgb(16 24 40 / 18%);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #14171d;
+    --surface: #1d222b;
+    --surface-raised: #262c37;
+    --text: #e9edf3;
+    --muted: #a9b2c1;
+    --border: #353d4b;
+    --hover: #2a313d;
+
+    --accent: #6c9cf5;
+    --accent-hover: #8bb1f8;
+    --accent-text: #0d1525;
+    --focus: #8bb1f8;
+
+    --chip-bg: #24365a;
+    --chip-text: #c7d8fb;
+    --badge-bg: #2c3340;
+    --badge-text: #d5dbe5;
+
+    --ok: #43c27a;
+    --warn: #e8b33a;
+    --danger: #f06a64;
+    --off: #6d7686;
+    --warn-bg: #3a2f12;
+    --warn-text: #f6dc9c;
+    --danger-bg: #3d1d1c;
+    --danger-text: #f8c2bf;
+
+    --shadow: 0 1px 2px rgb(0 0 0 / 40%);
+    --shadow-lifted: 0 8px 24px rgb(0 0 0 / 55%);
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 16px;
+  line-height: 1.45;
+}
+
+button,
+a.button {
+  font: inherit;
+  min-height: 40px;
+  padding: 0 16px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  text-decoration: none;
+}
+
+button:hover,
+a.button:hover {
+  background: var(--hover);
+}
+
+button.primary,
+a.button.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-text);
+  font-weight: 600;
+}
+
+button.primary:hover,
+a.button.primary:hover {
+  background: var(--accent-hover);
+}
+
+button.danger {
+  background: var(--danger);
+  border-color: var(--danger);
+  color: #fff;
+  font-weight: 600;
+}
+
+button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+:focus-visible {
+  outline: 3px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}

@@ -3,6 +3,7 @@ mod dto;
 mod events;
 mod history;
 mod state;
+mod status;
 
 use std::error::Error;
 use std::fs;
@@ -22,6 +23,7 @@ struct LogGuard(#[allow(dead_code)] WorkerGuard);
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let result = tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .setup(setup)
         .invoke_handler(tauri::generate_handler![
             commands::list_rules,
@@ -32,10 +34,13 @@ pub fn run() {
             commands::reorder_rules,
             commands::test_rule,
             commands::validate_rule,
+            commands::list_folder_files,
             commands::preview_destination,
             commands::list_markers,
             commands::list_filter_templates,
             commands::get_history,
+            commands::get_rule_statuses,
+            commands::resume_rule,
             commands::get_settings,
             commands::save_settings,
         ])

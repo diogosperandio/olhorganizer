@@ -430,7 +430,12 @@ async fn circuit_breaker_pauses_a_rule_cycle() {
                 assert!(matches!(outcome, Outcome::Moved { .. }), "{outcome:?}");
                 *passes.entry(rule_id).or_default() += 1;
             }
-            MonitorEvent::RulePaused { rule_id, reason_pt } => {
+            MonitorEvent::RulePaused {
+                rule_id,
+                reason_pt,
+                by_breaker,
+            } => {
+                assert!(by_breaker);
                 assert_eq!(reason_pt, monitor::breaker::BREAKER_MESSAGE);
                 break rule_id;
             }
@@ -465,7 +470,9 @@ async fn circuit_breaker_pauses_a_rule_cycle() {
             MonitorEvent::FileProcessed { rule_id, .. } if rule_id == tripped => {
                 resumed_moved = true;
             }
-            MonitorEvent::RulePaused { rule_id, reason_pt } if rule_id != tripped => {
+            MonitorEvent::RulePaused {
+                rule_id, reason_pt, ..
+            } if rule_id != tripped => {
                 assert_eq!(reason_pt, monitor::breaker::BREAKER_MESSAGE);
                 break;
             }

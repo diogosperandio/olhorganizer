@@ -8,12 +8,14 @@ use motor::Config;
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::history::History;
+use crate::status::StatusBoard;
 
 pub struct AppState {
     config: Mutex<Config>,
     config_path: PathBuf,
     monitor: Mutex<Monitor>,
     pub history: History,
+    pub statuses: StatusBoard,
 }
 
 impl AppState {
@@ -38,6 +40,7 @@ impl AppState {
             config_path,
             monitor: Mutex::new(monitor),
             history: History::default(),
+            statuses: StatusBoard::default(),
         }
     }
 
@@ -56,11 +59,26 @@ impl AppState {
         candidate
             .save(&self.config_path)
             .map_err(|e| e.to_string())?;
+        // Changed rules restart, so their pause or error is gone.
+        for rule in &candidate.rules {
+            if !config.rules.contains(rule) {
+                self.statuses.reset(rule.id);
+            }
+        }
         **config = candidate;
         self.monitor
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .reload(config);
         Ok(())
+    }
+
+    /// Restarts a rule paused by the circuit breaker.
+    pub fn resume(&self, rule_id: motor::Uuid) {
+        self.statuses.reset(rule_id);
+        self.monitor
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .resume(rule_id);
     }
 }

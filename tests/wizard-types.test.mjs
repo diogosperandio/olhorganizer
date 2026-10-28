@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   customMarkersFromFilter,
+  filterContainingText,
   filterWithTypes,
   typesFromFilter,
 } from "../src/lib/components/wizard/types.ts";
@@ -22,6 +23,11 @@ test("finds custom markers for destination buttons", () => {
     { kind: "TEXTO", name: "cliente", token: "{cliente}" },
     { kind: "NUM", name: "lote", token: "{lote}" },
   ]);
+});
+
+test("builds a literal contains filter instead of a variable capture", () => {
+  assert.equal(filterContainingText("ne", ["pdf"]), "*ne*.pdf");
+  assert.equal(filterContainingText("nota fiscal", ["pdf", "jpg"]), "*nota fiscal*.{pdf,jpg}");
 });
 
 test("converts reactive proxies into cloneable IPC payloads", () => {

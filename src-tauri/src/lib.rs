@@ -114,7 +114,9 @@ fn setup_app(app: &mut tauri::App) -> Result<(), String> {
     }
     let history = Arc::new(History::default());
     let (event_tx, event_rx) = mpsc::unbounded_channel();
-    let monitor = Monitor::start(config.clone(), event_tx);
+    let monitor_config = config.clone();
+    let monitor =
+        tauri::async_runtime::block_on(async move { Monitor::start(monitor_config, event_tx) });
     let startup_config = config.clone();
     let event_history = Arc::clone(&history);
     app.manage(notifications::NotificationBatcher::default());

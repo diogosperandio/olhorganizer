@@ -30,6 +30,10 @@ export function filterWithTypes(filter: string, types: string[]): string {
   return `${base || "*"}.${extensions.length === 1 ? extensions[0] : `{${extensions.join(",")}}`}`;
 }
 
+export function filterContainingText(text: string, types: string[]): string {
+  return filterWithTypes(`*${text}*`, types);
+}
+
 export function customMarkersFromFilter(filter: string): CustomMarker[] {
   return [...filter.matchAll(/\{(TEXTO|NUM):([a-zA-Z][a-zA-Z0-9_-]*)\}/g)].map((match) => ({
     kind: match[1] as CustomMarkerKind,

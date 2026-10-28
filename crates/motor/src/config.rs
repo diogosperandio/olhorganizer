@@ -134,6 +134,7 @@ impl Config {
 
         for (producer_index, producing_rule) in enabled.iter().enumerate() {
             let destination = destination_fixed_prefix(&producing_rule.destination);
+            let destination_has_markers = producing_rule.destination.contains('{');
             for (watcher_index, watching_rule) in enabled.iter().enumerate() {
                 if producer_index == watcher_index {
                     continue;
@@ -141,7 +142,7 @@ impl Config {
                 let watched = if watching_rule.include_subfolders {
                     path_is_same_or_inside(&destination, &watching_rule.source_dir)
                 } else {
-                    paths_equal(&destination, &watching_rule.source_dir)
+                    !destination_has_markers && paths_equal(&destination, &watching_rule.source_dir)
                 };
                 if watched {
                     edges[producer_index][watcher_index] = true;
@@ -515,6 +516,47 @@ mod tests {
     fn rejects_a_two_rule_cycle() {
         let config = Config {
             rules: vec![routed_rule("A", "/a", "/b"), routed_rule("B", "/b", "/a")],
+            ..Config::default()
+        };
+
+        assert_eq!(
+            config.validate_all().errors,
+            ["As regras 'A' e 'B' moveriam os arquivos de uma para a outra sem parar."]
+        );
+    }
+
+    #[test]
+    fn allows_nested_destinations_below_the_same_non_recursive_source() {
+        let mut retino = routed_rule(
+            "retino",
+            "/home/diogo/Downloads/NEWS",
+            "/home/diogo/Downloads/NEWS/{YYYY}/{MM}",
+        );
+        retino.filter = "*{YYYY}{MM}{DD}*.*".to_owned();
+
+        let mut regra2 = routed_rule(
+            "regra2",
+            "/home/diogo/Downloads/NEWS",
+            "/home/diogo/Downloads/NEWS/{YYYY}/{ne}/{MM}",
+        );
+        regra2.filter = "*{TEXTO:ne}*.jpg".to_owned();
+
+        let config = Config {
+            rules: vec![retino, regra2],
+            ..Config::default()
+        };
+
+        assert_eq!(config.validate_all(), ConfigValidation::default());
+    }
+
+    #[test]
+    fn rejects_marker_destinations_in_a_recursive_rule_cycle() {
+        let mut first = routed_rule("A", "/a", "/b/{YYYY}");
+        first.include_subfolders = true;
+        let mut second = routed_rule("B", "/b", "/a/{YYYY}");
+        second.include_subfolders = true;
+        let config = Config {
+            rules: vec![first, second],
             ..Config::default()
         };
 

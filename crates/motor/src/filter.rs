@@ -431,6 +431,16 @@ mod tests {
                 matches: false,
             },
             Case {
+                filter: "*ne*.pdf",
+                file_name: "canela.pdf",
+                matches: true,
+            },
+            Case {
+                filter: "*ne*.pdf",
+                file_name: "blaubi.pdf",
+                matches: false,
+            },
+            Case {
                 filter: "{YYYY}{MM}{DD}.pdf",
                 file_name: "20261022.pdf",
                 matches: true,

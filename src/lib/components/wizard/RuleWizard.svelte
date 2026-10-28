@@ -2,6 +2,7 @@
   import { onMount, untrack } from "svelte";
   import { listFilterTemplates, listMarkers, previewDestination, saveRule, testRule, toggleRule, validateRule } from "$lib/api";
   import { ptBR } from "$lib/i18n/pt-BR";
+  import { toPlainJson } from "$lib/ipc";
   import type { FilterTemplate, MarkerDef, Rule, TestRow, ValidationResult } from "$lib/types";
   import StepBehavior from "./StepBehavior.svelte";
   import StepDestination from "./StepDestination.svelte";
@@ -13,7 +14,7 @@
     rule?: Rule; nextPriority: number; onClose: () => void; onSaved: (rule: Rule, message: string) => void;
   } = $props();
 
-  const initialDraft = untrack((): Rule => rule ? structuredClone(rule) : ({
+  const initialDraft = untrack((): Rule => rule ? toPlainJson(rule) : ({
     id: crypto.randomUUID(), name: "", enabled: true, sourceDir: "", filter: "*", destination: "",
     action: "move", dateSource: "modified", checkMode: "instant", includeSubfolders: false,
     onConflict: "rename", priority: nextPriority,
@@ -58,7 +59,7 @@
 
   async function refreshValidation() {
     validationBusy = true;
-    try { validation = await validateRule(structuredClone(draft)); }
+    try { validation = await validateRule(draft); }
     catch (error) { validation = { errors: [String(error)], warnings: [] }; }
     finally { validationBusy = false; }
     return validation;
@@ -66,7 +67,7 @@
 
   async function runTest() {
     testing = true; testError = ""; testRows = [];
-    try { testRows = await testRule(structuredClone(draft)); }
+    try { testRows = await testRule(draft); }
     catch (error) { testError = String(error); }
     finally { testing = false; hasTested = true; }
   }
@@ -91,7 +92,7 @@
     saving = true;
     try {
       const changedFromSaved = !rule || JSON.stringify(initialDraft) !== JSON.stringify(draft);
-      let saved = await saveRule(structuredClone(draft));
+      let saved = await saveRule(draft);
       if (processNow) {
         if (!saved.enabled) saved = await toggleRule(saved.id, true);
         else if (editing && !changedFromSaved) {
@@ -126,7 +127,7 @@
     const timer = window.setTimeout(async () => {
       if (!draft.destination || !draft.filter) { preview = ""; previewError = ""; return; }
       try {
-        const value = await previewDestination(structuredClone(draft), sampleFile || "20261022.pdf");
+        const value = await previewDestination(draft, sampleFile || "20261022.pdf");
         if (JSON.stringify({ rule: draft, sampleFile }) === snapshot) { preview = value; previewError = ""; }
       } catch (error) {
         if (JSON.stringify({ rule: draft, sampleFile }) === snapshot) { preview = ""; previewError = String(error); }

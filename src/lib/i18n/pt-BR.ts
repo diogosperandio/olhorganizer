@@ -111,7 +111,7 @@ export const ptBR = {
   dateComesFrom: "Data vem de",
   dateFileName: "Nome do arquivo",
   dateModified: "Data de modificação",
-  dateDetected: "Data em que chegou",
+  dateDetected: "Data do sistema (agora)",
   schedule: "Quando verificar",
   instant: "Assim que o arquivo chegar",
   interval: "A cada",

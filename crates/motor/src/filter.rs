@@ -29,6 +29,10 @@ static FILTER_TEMPLATES: &[FilterTemplate] = &[
         name_pt: "Data no nome (AAAAMMDD)",
         filter: "{YYYY}{MM}{DD}.*",
     },
+    FilterTemplate {
+        name_pt: "O nome contém…",
+        filter: "*texto*",
+    },
 ];
 
 pub fn list_filter_templates() -> &'static [FilterTemplate] {
@@ -218,11 +222,26 @@ pub fn compile(filter: &str) -> Result<Filter, MotorError> {
             .chars()
             .next()
             .ok_or(MotorError::UnclosedBrace { position })?;
-        if character == '*' {
-            flush_literal(&mut pattern, &mut literal);
-            pattern.push_str(".*?");
-        } else {
-            literal.push(character);
+        match character {
+            '\\' => {
+                let escaped = remaining[character.len_utf8()..].chars().next();
+                match escaped {
+                    Some(escaped) if is_escapable_filter_character(escaped) => {
+                        literal.push(escaped);
+                        position += escaped.len_utf8();
+                    }
+                    _ => literal.push(character),
+                }
+            }
+            '*' => {
+                flush_literal(&mut pattern, &mut literal);
+                pattern.push_str(".*?");
+            }
+            '?' => {
+                flush_literal(&mut pattern, &mut literal);
+                pattern.push_str(r"[^/\\]");
+            }
+            _ => literal.push(character),
         }
         position += character.len_utf8();
     }
@@ -245,6 +264,10 @@ pub fn compile(filter: &str) -> Result<Filter, MotorError> {
         bindings,
         date_groups,
     })
+}
+
+fn is_escapable_filter_character(character: char) -> bool {
+    matches!(character, '\\' | '*' | '?' | '{' | '}')
 }
 
 fn brace_contents(filter: &str, opening: usize) -> Result<(&str, usize), MotorError> {
@@ -600,6 +623,69 @@ mod tests {
     }
 
     #[test]
+    fn t201_matches_contains_and_single_character_wildcards() {
+        struct Case {
+            filter: &'static str,
+            file_name: &'static str,
+            matches: bool,
+        }
+
+        let cases = [
+            ("*ne*.pdf", "nesta-semana.pdf", true),
+            ("*ne*.pdf", "cabeneta232320.pdf", true),
+            ("*ne*.pdf", "carabine.pdf", true),
+            ("*ne*.pdf", "Nesta-Semana.PDF", true),
+            ("*ne*.pdf", "relatorio.pdf", false),
+            ("*ne*.pdf", "ne.docx", false),
+            ("*belo*.pdf", "belo-horizonte.pdf", true),
+            ("*belo*.pdf", "cabelo.pdf", true),
+            ("*belo*.pdf", "abelos.pdf", true),
+            ("*belo*.pdf", "bela.pdf", false),
+            ("?*beti*.pdf", "alfabetizacao.pdf", true),
+            ("?*beti*.pdf", "elizabeti.pdf", true),
+            ("?*beti*.pdf", "betina.pdf", false),
+            ("?*beti*.pdf", "beti.pdf", false),
+            ("ne*.pdf", "nesta.pdf", true),
+            ("ne*.pdf", "carabine.pdf", false),
+            ("*ne.pdf", "carabine.pdf", true),
+            ("*ne.pdf", "nesta.pdf", false),
+            ("?.pdf", "a.pdf", true),
+            ("?.pdf", "ab.pdf", false),
+            ("?.pdf", ".pdf", false),
+        ];
+
+        for (filter, file_name, matches) in cases {
+            let compiled = compile(filter).expect("T201 filter should compile");
+            assert_eq!(
+                compiled.matches(file_name).is_some(),
+                matches,
+                "filter {filter:?}, file {file_name:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn t202_escapes_wildcards_and_braces_as_literal_text() {
+        let cases = [
+            (r"*a\*b*.pdf", "xa*by.pdf", true),
+            (r"*a\*b*.pdf", "xaZZby.pdf", false),
+            (r"*a\?b*.pdf", "xa?by.pdf", true),
+            (r"*a\?b*.pdf", "xaZby.pdf", false),
+            (r"*a\{b*.pdf", "xa{by.pdf", true),
+            (r"*a\{b*.pdf", "xaby.pdf", false),
+        ];
+
+        for (filter, file_name, matches) in cases {
+            let compiled = compile(filter).expect("T202 filter should compile");
+            assert_eq!(
+                compiled.matches(file_name).is_some(),
+                matches,
+                "filter {filter:?}, file {file_name:?}"
+            );
+        }
+    }
+
+    #[test]
     fn extracts_dates_custom_values_name_and_extension() {
         let filter = compile("{TEXTO:cliente}_{YYYY}{MM}{DD}.pdf").expect("filter should compile");
         let captures = filter
@@ -643,7 +729,7 @@ mod tests {
     #[test]
     fn exposes_the_documented_templates() {
         let templates = list_filter_templates();
-        assert_eq!(templates.len(), 4);
+        assert_eq!(templates.len(), 5);
         assert_eq!(
             templates[0],
             FilterTemplate {
@@ -670,6 +756,13 @@ mod tests {
             FilterTemplate {
                 name_pt: "Data no nome (AAAAMMDD)",
                 filter: "{YYYY}{MM}{DD}.*"
+            }
+        );
+        assert_eq!(
+            templates[4],
+            FilterTemplate {
+                name_pt: "O nome contém…",
+                filter: "*texto*"
             }
         );
 

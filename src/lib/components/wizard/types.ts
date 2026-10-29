@@ -30,12 +30,16 @@ export function filterWithTypes(filter: string, types: string[]): string {
   return `${base || "*"}.${extensions.length === 1 ? extensions[0] : `{${extensions.join(",")}}`}`;
 }
 
-export function filterContainingText(text: string, types: string[]): string {
-  return filterWithTypes(`*${text}*`, types);
+export function filterWithCustomMarker(filter: string, token: string, cursorPosition?: number): { filter: string; start: number } {
+  const extension = /\.(?:\{[a-zA-Z0-9,]+\}|[a-zA-Z0-9]+|\*)$/.exec(filter);
+  const start = cursorPosition === undefined
+    ? (extension?.index ?? filter.length)
+    : Math.max(0, Math.min(cursorPosition, filter.length));
+  return { filter: `${filter.slice(0, start)}${token}${filter.slice(start)}`, start };
 }
 
 export function customMarkersFromFilter(filter: string): CustomMarker[] {
-  return [...filter.matchAll(/\{(TEXTO|NUM):([a-zA-Z][a-zA-Z0-9_-]*)\}/g)].map((match) => ({
+  return [...filter.matchAll(/\{(TEXTO|NUM):([a-zA-Z0-9_-]+)\}/g)].map((match) => ({
     kind: match[1] as CustomMarkerKind,
     name: match[2],
     token: `{${match[2]}}`,

@@ -16,6 +16,7 @@ Olhorganizer is a desktop app for non-technical users that watches folders and m
 - `*` matches any text.
 - `{TEXTO:name}` captures letters/digits, `{NUM:name}` captures digits, and `{*}` matches without capturing.
 - A named capture becomes a destination marker such as `{name}`.
+- In the rule wizard, custom markers are created from a name and type; no sample file or text selection is required.
 - `|` inside braces is reserved for future modifiers.
 
 ## Subfolders and destinations

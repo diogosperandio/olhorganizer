@@ -146,7 +146,7 @@
     <header><div><p>{editing ? ptBR.wizardEditTitle : ptBR.wizardCreateTitle}</p><h2 id="wizard-title">{steps[step]}</h2></div><button type="button" aria-label={ptBR.closeWizard} onclick={onClose}>×</button></header>
     <nav aria-label={ptBR.wizardCreateTitle}>{#each steps as label, index}<button type="button" class:active={step === index} class:done={index < step} disabled={!editing && index > maxVisited} onclick={() => goTo(index)}><span>{index + 1}</span>{label}</button>{/each}</nav>
     <section class="wizard-body">
-      {#if step === 0}<StepSource bind:draft {templates} bind:customMarkers bind:sampleFile bind:selectedTypes bind:selectedTemplate errors={sourceErrors} {editing} />
+      {#if step === 0}<StepSource bind:draft {templates} bind:customMarkers bind:selectedTypes bind:selectedTemplate errors={sourceErrors} {editing} />
       {:else if step === 1}<StepDestination bind:draft {markers} {customMarkers} {sampleFile} {preview} {previewError} errors={destinationErrors} warnings={validation.warnings} />
       {:else if step === 2}<StepBehavior bind:draft errors={behaviorErrors} />
       {:else}<WizardReview rows={testRows} {testing} {testError} onTest={runTest} />{/if}

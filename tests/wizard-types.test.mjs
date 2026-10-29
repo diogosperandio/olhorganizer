@@ -3,7 +3,7 @@ import test from "node:test";
 
 import {
   customMarkersFromFilter,
-  filterContainingText,
+  filterWithCustomMarker,
   filterWithTypes,
   typesFromFilter,
 } from "../src/lib/components/wizard/types.ts";
@@ -25,9 +25,23 @@ test("finds custom markers for destination buttons", () => {
   ]);
 });
 
-test("builds a literal contains filter instead of a variable capture", () => {
-  assert.equal(filterContainingText("ne", ["pdf"]), "*ne*.pdf");
-  assert.equal(filterContainingText("nota fiscal", ["pdf", "jpg"]), "*nota fiscal*.{pdf,jpg}");
+test("inserts custom markers before extensions or at the chosen cursor", () => {
+  assert.deepEqual(filterWithCustomMarker("*.pdf", "{TEXTO:cliente}"), {
+    filter: "*{TEXTO:cliente}.pdf",
+    start: 1,
+  });
+  assert.deepEqual(filterWithCustomMarker("{YYYY}{MM}{DD}.*", "{NUM:lote}"), {
+    filter: "{YYYY}{MM}{DD}{NUM:lote}.*",
+    start: 14,
+  });
+  assert.deepEqual(filterWithCustomMarker("prefixo", "{TEXTO:cliente}"), {
+    filter: "prefixo{TEXTO:cliente}",
+    start: 7,
+  });
+  assert.deepEqual(filterWithCustomMarker("*.pdf", "{TEXTO:cliente}", 0), {
+    filter: "{TEXTO:cliente}*.pdf",
+    start: 0,
+  });
 });
 
 test("converts reactive proxies into cloneable IPC payloads", () => {

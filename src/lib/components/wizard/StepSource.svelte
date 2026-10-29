@@ -1,22 +1,23 @@
 <script lang="ts">
+  import { tick } from "svelte";
   import { open } from "@tauri-apps/plugin-dialog";
+  import { validateRule } from "$lib/api";
   import { ptBR } from "$lib/i18n/pt-BR";
   import type { FilterTemplate, Rule } from "$lib/types";
-  import { customMarkersFromFilter, fileNameFromPath, filterContainingText, filterWithTypes, folderNameFromPath, knownFileTypes, type CustomMarker, type CustomMarkerKind, typesFromFilter } from "./types";
+  import { customMarkersFromFilter, filterWithCustomMarker, filterWithTypes, folderNameFromPath, knownFileTypes, type CustomMarker, type CustomMarkerKind, typesFromFilter } from "./types";
 
-  let { draft = $bindable(), templates, customMarkers = $bindable(), sampleFile = $bindable(), selectedTypes = $bindable(), selectedTemplate = $bindable(), errors, editing }: {
-    draft: Rule; templates: FilterTemplate[]; customMarkers: CustomMarker[]; sampleFile: string;
+  let { draft = $bindable(), templates, customMarkers = $bindable(), selectedTypes = $bindable(), selectedTemplate = $bindable(), errors, editing }: {
+    draft: Rule; templates: FilterTemplate[]; customMarkers: CustomMarker[];
     selectedTypes: string[]; selectedTemplate: string; errors: string[]; editing: boolean;
   } = $props();
 
   let otherType = $state("");
-  let selectedText = $state("");
-  let selectionStart = $state(0);
-  let selectionEnd = $state(0);
   let markerName = $state("");
   let markerKind = $state<CustomMarkerKind>("TEXTO");
   let markerError = $state("");
-  let sampleInput = $state<HTMLInputElement>();
+  let advancedOpen = $state(false);
+  let filterInput = $state<HTMLInputElement>();
+  let lastFilterCursor = $state<number | undefined>();
 
   async function chooseSource() {
     const selected = await open({ directory: true, multiple: false, defaultPath: draft.sourceDir || undefined });
@@ -26,24 +27,19 @@
     if (shouldPrefill) draft.name = folderNameFromPath(selected);
   }
 
-  async function chooseSample() {
-    const selected = await open({ directory: false, multiple: false, defaultPath: draft.sourceDir || undefined });
-    if (typeof selected === "string") {
-      sampleFile = fileNameFromPath(selected);
-      selectedText = "";
-    }
-  }
-
   function chooseTemplate(template: FilterTemplate) {
     selectedTemplate = template.filter;
     draft.filter = template.filter;
     selectedTypes = typesFromFilter(template.filter);
+    customMarkers = customMarkersFromFilter(template.filter);
+    lastFilterCursor = undefined;
     if (template.filter.includes("{YYYY}") && template.filter.includes("{MM}") && template.filter.includes("{DD}")) draft.dateSource = "file_name";
   }
 
   function toggleType(type: string) {
     selectedTypes = selectedTypes.includes(type) ? selectedTypes.filter((value) => value !== type) : [...selectedTypes, type];
     draft.filter = filterWithTypes(draft.filter, selectedTypes);
+    lastFilterCursor = undefined;
   }
 
   function addOtherType() {
@@ -51,48 +47,80 @@
     if (!type) return;
     if (!selectedTypes.includes(type)) selectedTypes = [...selectedTypes, type];
     draft.filter = filterWithTypes(draft.filter, selectedTypes);
+    lastFilterCursor = undefined;
     otherType = "";
   }
 
-  function updateSelection() {
-    selectionStart = sampleInput?.selectionStart ?? 0;
-    selectionEnd = sampleInput?.selectionEnd ?? 0;
-    selectedText = sampleFile.slice(selectionStart, selectionEnd);
-    if (/^\d+$/.test(selectedText)) markerKind = "NUM";
-  }
-
-  function structure(value: string): string {
+  function suggestedMarkerName(value: string): string {
     return value
-      .replace(/\d{8}/g, "\uE000")
-      .replace(/[\p{L}\p{N}]+/gu, "*")
-      .replace(/\*+/g, "*")
-      .replace(/\uE000/g, "{YYYY}{MM}{DD}");
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .replace(/[^a-zA-Z0-9_]+/g, "_")
+      .replace(/^_+|_+$/g, "");
   }
 
-  function addCustomMarker() {
+  function markerNameError(): string {
+    if (!markerName) return "";
+    if (/^[a-zA-Z0-9_]+$/.test(markerName)) return "";
+    const suggestion = suggestedMarkerName(markerName);
+    return suggestion
+      ? `${ptBR.invalidMarkerName} ${ptBR.invalidMarkerNameSuggestion} ${suggestion}`
+      : ptBR.invalidMarkerName;
+  }
+
+  async function addCustomMarker() {
+    if (!markerName) return;
     markerError = "";
-    const stem = sampleFile.replace(/\.[^.]+$/, "");
-    if (!selectedText || selectionEnd > stem.length) { markerError = ptBR.invalidMarkerSelection; return; }
-    if (!/^[a-zA-Z][a-zA-Z0-9_-]*$/.test(markerName)) { markerError = ptBR.invalidMarkerName; return; }
+    const localError = markerNameError();
+    if (localError) { markerError = localError; return; }
     const token = `{${markerKind}:${markerName}}`;
-    const prefix = structure(stem.slice(0, selectionStart));
-    const suffix = structure(stem.slice(selectionEnd));
-    draft.filter = filterWithTypes(`${prefix}${token}${suffix}`, selectedTypes.length ? selectedTypes : typesFromFilter(draft.filter));
-    customMarkers = [...customMarkers.filter((marker) => marker.name !== markerName), { name: markerName, kind: markerKind, token: `{${markerName}}` }];
+    const inserted = filterWithCustomMarker(draft.filter, token, lastFilterCursor);
+    const candidate = { ...draft, filter: inserted.filter };
+    try {
+      const result = await validateRule(candidate);
+      const compilerError = result.errors.find((error) =>
+        error.includes(`'${markerName}'`) && /(repetido|conflito|inválido)/i.test(error),
+      );
+      if (compilerError) { markerError = compilerError; return; }
+    } catch (error) {
+      markerError = `${ptBR.actionError} ${String(error)}`;
+      return;
+    }
+    draft.filter = inserted.filter;
+    customMarkers = customMarkersFromFilter(draft.filter);
+    selectedTemplate = "";
+    lastFilterCursor = inserted.start + token.length;
     markerName = "";
-    selectedText = "";
+    advancedOpen = true;
+    await tick();
+    filterInput?.focus();
+    filterInput?.setSelectionRange(inserted.start, inserted.start + token.length);
+    window.setTimeout(() => {
+      if (filterInput?.selectionStart === inserted.start && filterInput.selectionEnd === inserted.start + token.length) {
+        filterInput.setSelectionRange(inserted.start + token.length, inserted.start + token.length);
+      }
+    }, 1200);
   }
 
-  function requireSelectedText() {
-    markerError = "";
-    const stem = sampleFile.replace(/\.[^.]+$/, "");
-    if (!selectedText || selectionEnd > stem.length) { markerError = ptBR.invalidMarkerSelection; return; }
-    if (!/^[\p{L}\p{N} _.-]+$/u.test(selectedText)) { markerError = ptBR.invalidRequiredText; return; }
-    const types = selectedTypes.length ? selectedTypes : typesFromFilter(draft.filter);
-    draft.filter = filterContainingText(selectedText, types);
+  function removeCustomMarker(marker: CustomMarker) {
+    if (draft.destination.includes(marker.token)
+      && !window.confirm(ptBR.removeMarkerUsedDestination.replace("{name}", marker.token))) return;
+    const capture = new RegExp(`\\{(?:TEXTO|NUM):${marker.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\}`);
+    draft.filter = draft.filter.replace(capture, "");
+    customMarkers = customMarkersFromFilter(draft.filter);
     selectedTemplate = "";
-    markerName = "";
-    selectedText = "";
+    lastFilterCursor = undefined;
+  }
+
+  function updateFilterCursor() {
+    lastFilterCursor = filterInput?.selectionStart ?? undefined;
+  }
+
+  function updateRawFilter() {
+    selectedTemplate = "";
+    selectedTypes = typesFromFilter(draft.filter);
+    customMarkers = customMarkersFromFilter(draft.filter);
+    updateFilterCursor();
   }
 </script>
 
@@ -121,22 +149,16 @@
   </fieldset>
 
   <details class="marker-builder"><summary>{ptBR.useNameMarker}</summary><p class="help">{ptBR.markerHelp}</p>
-    <button class="picker" type="button" disabled={!draft.sourceDir} onclick={chooseSample}>{ptBR.chooseSample}</button>
-    {#if sampleFile}<label class="field"><span>{ptBR.sampleFile}</span><input class="sample" bind:this={sampleInput} value={sampleFile} readonly onselect={updateSelection} onmouseup={updateSelection} onkeyup={updateSelection} /></label>
-      <div class="selection-row"><span>{ptBR.selection}:</span><strong>{selectedText || "—"}</strong></div>
-      <div class="literal-filter"><span>{ptBR.requiredTextHelp}</span><button class="picker" type="button" disabled={!selectedText} onclick={requireSelectedText}>{ptBR.requireSelectedText}</button></div>
-      <div class="choice-divider"><span>{ptBR.orVariableMarker}</span></div>
-      <p class="help">{ptBR.variableMarkerHelp}</p>
-      <div class="marker-controls"><label><span>{ptBR.markerNameLabel}</span><input bind:value={markerName} placeholder={ptBR.markerNamePlaceholder} /></label>
-        <div class="segmented"><button type="button" class:active={markerKind === "TEXTO"} onclick={() => (markerKind = "TEXTO")}>{ptBR.markerAsText}</button><button type="button" class:active={markerKind === "NUM"} onclick={() => (markerKind = "NUM")}>{ptBR.markerAsNumber}</button></div>
-        <button class="picker" type="button" onclick={addCustomMarker}>{ptBR.addMarker}</button>
-      </div>{#if markerError}<small class="field-error">{markerError}</small>{/if}
-    {/if}
+    <div class="marker-controls"><label><span>{ptBR.markerNameLabel}</span><input bind:value={markerName} placeholder={ptBR.markerNamePlaceholder} aria-invalid={Boolean(markerError)} oninput={() => (markerError = markerNameError())} onkeydown={(event) => { if (event.key === "Enter") { event.preventDefault(); void addCustomMarker(); } }} />{#if markerError}<small class="field-error" aria-live="polite">{markerError}</small>{/if}</label>
+      <div class="segmented" aria-label={ptBR.markerTypeLabel}><button type="button" class:active={markerKind === "TEXTO"} aria-pressed={markerKind === "TEXTO"} onclick={() => (markerKind = "TEXTO")}>{ptBR.markerAsText}</button><button type="button" class:active={markerKind === "NUM"} aria-pressed={markerKind === "NUM"} onclick={() => (markerKind = "NUM")}>{ptBR.markerAsNumber}</button></div>
+      <button class="picker" type="button" disabled={!markerName} onclick={() => void addCustomMarker()}>{ptBR.addMarker}</button>
+    </div>
+    {#if customMarkers.length}<div class="marker-chips">{#each customMarkers as marker}<span>{marker.name} · {marker.kind === "TEXTO" ? ptBR.markerAsText.toLocaleLowerCase("pt-BR") : ptBR.markerAsNumber.toLocaleLowerCase("pt-BR")}<button type="button" aria-label={`${ptBR.removeMarker} ${marker.name}`} onclick={() => removeCustomMarker(marker)}>×</button></span>{/each}</div>{/if}
   </details>
 
   <label class="switch-row"><button type="button" role="switch" aria-label={ptBR.includeSubfoldersLabel} aria-checked={draft.includeSubfolders} class:on={draft.includeSubfolders} onclick={() => (draft.includeSubfolders = !draft.includeSubfolders)}><span></span></button><span><strong>{ptBR.includeSubfoldersLabel}</strong><small>{ptBR.includeSubfoldersHelp}</small></span></label>
 
-  <details class="advanced"><summary>{ptBR.advancedUsers}</summary><label class="field"><span>{ptBR.rawFilter}</span><input class="code-input" bind:value={draft.filter} oninput={() => { selectedTemplate = ""; selectedTypes = typesFromFilter(draft.filter); customMarkers = customMarkersFromFilter(draft.filter); }} /></label></details>
+  <details class="advanced" bind:open={advancedOpen}><summary>{ptBR.advancedUsers}</summary><label class="field"><span>{ptBR.rawFilter}</span><input bind:this={filterInput} class="code-input" bind:value={draft.filter} oninput={updateRawFilter} onclick={updateFilterCursor} onkeyup={updateFilterCursor} onselect={updateFilterCursor} /></label></details>
 </div>
 
 <style>
@@ -147,12 +169,8 @@
   .chips button.active { border-color: var(--accent); color: var(--accent-strong); background: var(--accent-soft); }
   .inline-input, .marker-controls { display: flex; align-items: end; gap: .55rem; margin-top: .7rem; } .inline-input label, .marker-controls label { display: grid; flex: 1; gap: .3rem; }
   .marker-builder, .advanced { padding: .75rem; border: 1px solid var(--border); border-radius: .7rem; } summary { min-height: 40px; padding-top: .55rem; font-weight: 700; cursor: pointer; }
-  .sample { user-select: text; } .selection-row { display: flex; gap: .5rem; margin-top: .5rem; color: var(--text-soft); } .selection-row strong { color: var(--accent-strong); }
-  .literal-filter { display: flex; align-items: center; justify-content: space-between; gap: .75rem; margin-top: .65rem; }
-  .literal-filter span { color: var(--text-soft); }
-  .choice-divider { display: flex; align-items: center; gap: .6rem; margin: .8rem 0 .55rem; color: var(--text-soft); font-size: .85rem; }
-  .choice-divider::before, .choice-divider::after { content: ""; flex: 1; height: 1px; background: var(--border); }
   .segmented { display: flex; } .segmented button { min-height: 40px; border: 1px solid var(--border); color: var(--text); background: var(--surface); cursor: pointer; } .segmented button:first-child { border-radius: .55rem 0 0 .55rem; } .segmented button:last-child { border-radius: 0 .55rem .55rem 0; } .segmented button.active { color: white; background: var(--accent); }
+  .marker-chips { display: flex; flex-wrap: wrap; gap: .4rem; margin-top: .7rem; } .marker-chips span { display: inline-flex; align-items: center; gap: .3rem; min-height: 32px; padding: .25rem .35rem .25rem .6rem; border-radius: 999px; color: var(--accent-strong); background: var(--accent-soft); font-size: .8rem; font-weight: 700; } .marker-chips button { display: grid; place-items: center; width: 26px; height: 26px; padding: 0; border: 0; border-radius: 50%; color: inherit; background: transparent; font: inherit; font-size: 1rem; cursor: pointer; } .marker-chips button:hover, .marker-chips button:focus-visible { background: var(--surface); }
   .switch-row { display: flex; align-items: center; gap: .7rem; } .switch-row > button { position: relative; width: 46px; min-width: 46px; height: 40px; border: 0; border-radius: 999px; background: var(--switch-off); cursor: pointer; } .switch-row > button span { position: absolute; top: 9px; left: 7px; width: 22px; height: 22px; border-radius: 50%; background: white; transition: 150ms; } .switch-row > button.on { background: var(--accent); } .switch-row > button.on span { transform: translateX(10px); } .switch-row > span { display: grid; gap: .2rem; } .switch-row small { color: var(--text-soft); }
-  @media (max-width: 620px) { .template-grid { grid-template-columns: 1fr; } .marker-controls, .literal-filter { align-items: stretch; flex-direction: column; } }
+  @media (max-width: 620px) { .template-grid { grid-template-columns: 1fr; } .marker-controls { align-items: stretch; flex-direction: column; } }
 </style>
